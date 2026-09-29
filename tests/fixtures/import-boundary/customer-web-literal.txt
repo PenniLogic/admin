@@ -1,0 +1,3 @@
+import { layout } from "customer-web/layout";
+
+export const planted = layout;

@@ -1,0 +1,4 @@
+const name = ["@pennilogic", "web"].join("/");
+const web = require(name);
+
+module.exports = web;

@@ -1,0 +1,3 @@
+import { session } from "/srv/checkouts/web/src/session";
+
+export const planted = session;

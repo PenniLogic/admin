@@ -1,0 +1,40 @@
+{
+  "name": "pennilogic-admin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PenniLogic administrative console: isolated deny-only scaffold behind its own authorization boundary.",
+  "engines": {
+    "node": ">=24.0.0 <25",
+    "npm": ">=11.0.0 <12"
+  },
+  "packageManager": "npm@11.9.0",
+  "scripts": {
+    "dev": "node tools/next-cli.mjs dev",
+    "build": "node tools/next-cli.mjs build",
+    "start": "node tools/next-cli.mjs start",
+    "typecheck": "node tools/next-cli.mjs typegen && tsc --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "check:imports": "node tools/import-boundary/check.mjs",
+    "test": "vitest run --project unit --coverage",
+    "smoke": "vitest run --project smoke",
+    "verify": "npm run lint && npm run typecheck && npm run check:imports && npm test && npm run build && npm run smoke"
+  },
+  "dependencies": {
+    "next": "16.3.7",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@next/eslint-plugin-next": "16.3.7",
+    "@types/node": "24.19.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "@vitest/coverage-v8": "5.0.2",
+    "eslint": "10.11.0",
+    "globals": "17.12.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.71.0",
+    "vitest": "5.0.2"
+  }
+}
