@@ -25,6 +25,9 @@
       "name": "CI",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 10,
+      "env": {
+        "NEXT_TELEMETRY_DISABLED": "1"
+      },
       "steps": [
         {
           "name": "Checkout",
@@ -42,8 +45,15 @@
           }
         },
         {
+          "name": "Node",
+          "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+          "with": {
+            "node-version-file": ".nvmrc"
+          }
+        },
+        {
           "name": "Run checks",
-          "run": "python scripts/check_repository.py"
+          "run": "python scripts/check_repository.py\nnpm ci --no-audit --no-fund\nnpm run lint\nnpm run typecheck\nnpm run check:imports\nnpm test\nnpm run build\nnpm run smoke"
         }
       ]
     }

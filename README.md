@@ -3,7 +3,7 @@
 
 Administrative console with a separate authorization boundary.
 
-**Status:** Repository foundation only. The previous unmerged scaffold remains in PenniLogic-old.
+**Status:** Repository foundation plus the isolated deny-only admin console scaffold from PenniLogic/admin#1; no administrative identity provider, features or authentication are implemented.
 
 This repository belongs to the new public, Free-plan `PenniLogic` organization.
 `migration-source.json` records the pinned source snapshot and excluded history.
@@ -15,7 +15,17 @@ The old private repositories, unmerged branches and discussions remain in
 ```text
 python scripts/setup.py
 python scripts/check_repository.py
+npm ci --no-audit --no-fund
+npm run lint
+npm run typecheck
+npm run check:imports
+npm test
+npm run build
+npm run smoke
 ```
+
+Repository-specific setup, commands and troubleshooting are maintained by hand in
+[docs/scaffold.md](docs/scaffold.md); that guide is not generated.
 
 See [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 Product specifications and the preserved backlog are in

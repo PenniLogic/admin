@@ -3,7 +3,7 @@
 
 Administrative console with a separate authorization boundary.
 
-**Current scope:** Repository foundation only. The previous unmerged scaffold remains in PenniLogic-old.
+**Current scope:** Repository foundation plus the isolated deny-only admin console scaffold from PenniLogic/admin#1; no administrative identity provider, features or authentication are implemented.
 
 Read this file, the linked plan item, relevant product decisions and
 `.github/agent-policy.json`. This new public repository has its own delivery
@@ -32,7 +32,17 @@ cannot approve its own PR. Never invent another GitHub reviewer.
 ```text
 python scripts/setup.py
 python scripts/check_repository.py
+npm ci --no-audit --no-fund
+npm run lint
+npm run typecheck
+npm run check:imports
+npm test
+npm run build
+npm run smoke
 ```
+
+Repository-specific setup, commands and troubleshooting are maintained by hand in
+[docs/scaffold.md](docs/scaffold.md); that guide is not generated.
 
 Install the managed hook with the documented setup command. Preserve a custom
 hook rather than replacing it. Never claim an unrun build, test, accessibility
