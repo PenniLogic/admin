@@ -34,7 +34,7 @@ import {
   packageNameOf,
   REGISTRY_URL_PREFIX,
   RULES,
-  RUNTIME_ALLOWED_PACKAGES,
+  RUNTIME_ALLOWED_SPECIFIERS,
   RUNTIME_DIRECTORIES,
   RUNTIME_FILES,
   RUNTIME_REFUSED_IDENTIFIERS,
@@ -46,7 +46,7 @@ import {
 /**
  * @typedef {{ rule: string, file: string, specifier: string, message: string, line?: number }} Violation
  * @typedef {{ root: string, declared: ReadonlySet<string> }} Context
- * @typedef {{ specifier: string, line: number }} Located
+ * @typedef {{ specifier: string, line: number, typeOnly?: boolean }} Located
  * @typedef {{
  *   specifiers: Located[],
  *   nonLiteral: Located[],
@@ -218,18 +218,21 @@ export function parseSource(source, fileName, options = {}) {
       record(parsed.loaderImports, builtin, node);
     }
   };
-  /** @param {ts.Node} literal */
-  const staticSpecifier = (literal) => {
+  /** @param {ts.Node} literal @param {boolean} typeOnly */
+  const staticSpecifier = (literal, typeOnly) => {
     const text = staticText(literal);
-    record(parsed.specifiers, text, literal);
+    parsed.specifiers.push({ specifier: text, line: lineOf(literal), typeOnly });
     noteLoaderBuiltin(text, literal);
   };
 
-  for (const reference of [...sourceFile.referencedFiles, ...sourceFile.typeReferenceDirectives]) {
-    parsed.specifiers.push({ specifier: reference.fileName, line: sourceFile.getLineAndCharacterOfPosition(reference.pos).line + 1 });
+  for (const reference of sourceFile.referencedFiles) {
+    parsed.specifiers.push({ specifier: reference.fileName, line: sourceFile.getLineAndCharacterOfPosition(reference.pos).line + 1, typeOnly: false });
+  }
+  for (const reference of sourceFile.typeReferenceDirectives) {
+    parsed.specifiers.push({ specifier: reference.fileName, line: sourceFile.getLineAndCharacterOfPosition(reference.pos).line + 1, typeOnly: true });
   }
   for (const dependency of sourceFile.amdDependencies) {
-    parsed.specifiers.push({ specifier: dependency.path, line: 1 });
+    parsed.specifiers.push({ specifier: dependency.path, line: 1, typeOnly: false });
   }
   // First pass: bindings introduced by loader-builtin imports, so later accesses can be judged.
   for (const statement of sourceFile.statements) {
@@ -243,14 +246,39 @@ export function parseSource(source, fileName, options = {}) {
     }
   }
 
+  /**
+   * An import or export declaration is type-only when the whole clause is `type` or every named
+   * binding is; a bare side-effect import is a value import.
+   * @param {ts.ImportDeclaration | ts.ExportDeclaration} node
+   */
+  const isTypeOnlyDeclaration = (node) => {
+    if (ts.isImportDeclaration(node)) {
+      const clause = node.importClause;
+      if (clause === undefined) {
+        return false;
+      }
+      if (clause.isTypeOnly) {
+        return true;
+      }
+      const bindings = clause.namedBindings;
+      return clause.name === undefined && bindings !== undefined && ts.isNamedImports(bindings) && bindings.elements.length > 0
+        && bindings.elements.every((element) => element.isTypeOnly);
+    }
+    if (node.isTypeOnly) {
+      return true;
+    }
+    const clause = node.exportClause;
+    return clause !== undefined && ts.isNamedExports(clause) && clause.elements.length > 0 && clause.elements.every((element) => element.isTypeOnly);
+  };
+
   /** @param {ts.Node} node */
   const visit = (node) => {
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) {
-      staticSpecifier(node.moduleSpecifier);
+      staticSpecifier(node.moduleSpecifier, isTypeOnlyDeclaration(node));
     } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
-      staticSpecifier(node.moduleReference.expression);
+      staticSpecifier(node.moduleReference.expression, node.isTypeOnly);
     } else if (ts.isImportTypeNode(node)) {
-      staticSpecifier(ts.isLiteralTypeNode(node.argument) ? node.argument.literal : node.argument);
+      staticSpecifier(ts.isLiteralTypeNode(node.argument) ? node.argument.literal : node.argument, true);
     } else if (ts.isCallExpression(node)) {
       const callee = node.expression;
       const isDynamicImport = callee.kind === ts.SyntaxKind.ImportKeyword;
@@ -261,7 +289,7 @@ export function parseSource(source, fileName, options = {}) {
         if (literal === null) {
           record(parsed.nonLiteral, node.getText(sourceFile), node);
         } else {
-          record(parsed.specifiers, literal, node);
+          parsed.specifiers.push({ specifier: literal, line: lineOf(node), typeOnly: false });
           noteLoaderBuiltin(literal, node);
         }
         // The callee identifier is legitimate here; skip it and visit the arguments only.
@@ -298,6 +326,15 @@ export function parseSource(source, fileName, options = {}) {
       }
     } else if (ts.isMetaProperty(node) && runtime) {
       record(parsed.runtimeReferences, "import.meta", node);
+    } else if (node.kind === ts.SyntaxKind.ThisKeyword && runtime) {
+      // `this` at module or function level is a route to the global object.
+      record(parsed.runtimeReferences, "this", node);
+    } else if (ts.isComputedPropertyName(node)) {
+      // Computed keys in object literals, classes and destructuring patterns name members indirectly.
+      const literal = literalText(node.expression) !== null || ts.isNumericLiteral(node.expression);
+      if (runtime && !literal) {
+        record(parsed.computed, node.parent.getText(sourceFile), node);
+      }
     }
     ts.forEachChild(node, visit);
   };
@@ -417,16 +454,26 @@ export function checkSpecifier(specifier, file, context) {
 }
 
 /**
- * Checks a specifier against the runtime allowlist; only called for runtime source.
+ * Checks a specifier against the exact runtime allowlist; only called for runtime source. A
+ * repository file through `@/` is always acceptable; an allowed package specifier must match
+ * exactly and, when the entry says so, be imported as types only.
  * @param {string} specifier
+ * @param {boolean} [typeOnly] whether the import carries no runtime value
  * @returns {boolean}
  */
-export function isRuntimeAllowedSpecifier(specifier) {
+export function isRuntimeAllowedSpecifier(specifier, typeOnly = false) {
   if (specifier.startsWith("@/")) {
     return true;
   }
-  return RUNTIME_ALLOWED_PACKAGES.some((name) => specifier === name || specifier.startsWith(`${name}/`));
+  if (!Object.prototype.hasOwnProperty.call(RUNTIME_ALLOWED_SPECIFIERS, specifier)) {
+    return false;
+  }
+  const entry = RUNTIME_ALLOWED_SPECIFIERS[/** @type {keyof typeof RUNTIME_ALLOWED_SPECIFIERS} */ (specifier)];
+  return !entry.typeOnly || typeOnly;
 }
+
+const RUNTIME_IMPORT_MESSAGE =
+  "Runtime source imports only type-only next/server, type-only next and repository files through @/; trust is not delegated to package internals.";
 
 /**
  * Checks every import and refused construct of one source text.
@@ -449,8 +496,8 @@ export function checkSource(source, file, context) {
     const found = checkSpecifier(located.specifier, file, context);
     if (found) {
       violations.push({ ...found, line: located.line });
-    } else if (runtime && !isRuntimeAllowedSpecifier(located.specifier)) {
-      add(RULES.runtimeImport, located, "Runtime source imports only next, react, react-dom and repository files through @/.");
+    } else if (runtime && !isRuntimeAllowedSpecifier(located.specifier, located.typeOnly === true)) {
+      add(RULES.runtimeImport, located, RUNTIME_IMPORT_MESSAGE);
     }
   }
   for (const located of parsed.nonLiteral) {

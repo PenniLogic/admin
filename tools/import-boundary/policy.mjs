@@ -61,14 +61,16 @@ export const PACKAGE_SUBPATH_ESCAPE_PATTERN = /^(?:@[^/]+\/)?[^./\\%][^/\\%]*\/(
 export const OBFUSCATED_SPECIFIER_PATTERN = /[\\%]/;
 
 /**
- * Identifiers that load or evaluate code outside the static import graph. Any reference anywhere in
- * scanned source is refused: as an identifier, a property name or a string-literal element key.
+ * Identifiers that load or evaluate code outside the static import graph, or reach members without
+ * naming them (`Reflect`). Any reference anywhere in scanned source is refused: as an identifier, a
+ * property name or a string-literal element key.
  */
 export const INDIRECT_LOADER_IDENTIFIERS = Object.freeze([
   "createRequire",
   "eval",
   "Function",
   "constructor",
+  "Reflect",
   "getBuiltinModule",
   "binding",
   "dlopen",
@@ -104,10 +106,17 @@ export const LOADER_BUILTIN_ALLOWANCES = Object.freeze({
 });
 
 /**
- * Positive allowlist for runtime source (`proxy.ts`, `app/**`, `src/**`, `next.config.ts`): the
- * deny-only runtime imports only these packages (any subpath) and repository files through `@/`.
+ * Positive allowlist for runtime source (`proxy.ts`, `app/**`, `src/**`, `next.config.ts`): exact
+ * specifiers only, each type-only. Trust is not delegated to any package tree: `next` has no
+ * `exports` map, so its internals (`next/dist/server/require`, `load-manifest.external`, ...) hold
+ * real loaders and would resolve from runtime files. `react` and `react-dom` join this list only
+ * when a component exists, and `next/dist/*`, `next/dist/compiled/*` and `react-dom/server` never.
+ * Repository files are imported through `@/` only.
  */
-export const RUNTIME_ALLOWED_PACKAGES = Object.freeze(["next", "react", "react-dom"]);
+export const RUNTIME_ALLOWED_SPECIFIERS = Object.freeze({
+  "next/server": Object.freeze({ typeOnly: true }),
+  next: Object.freeze({ typeOnly: true }),
+});
 
 /**
  * Identifiers runtime source must not reference at all. The deny-only runtime needs no process,
@@ -224,15 +233,25 @@ export const RESTRICTED_IMPORT_PATTERNS = Object.freeze([
   },
 ]);
 
+/** @param {string} text */
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+
 /**
- * ESLint `no-restricted-imports` patterns for runtime source only: everything except the allowed
- * runtime packages (any subpath) and the repository alias is refused.
+ * ESLint `no-restricted-imports` patterns for runtime source only: every specifier except the exact
+ * allowed ones and the repository alias is refused, and the allowed ones must be type-only
+ * (`allowTypeImports` lets `import type` through the second pattern).
  */
 export const RUNTIME_RESTRICTED_IMPORT_PATTERNS = Object.freeze([
   {
-    regex: `^(?!(?:${RUNTIME_ALLOWED_PACKAGES.map((name) => name.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")).join("|")})(?:/|$)|@/)`,
+    regex: `^(?!(?:${Object.keys(RUNTIME_ALLOWED_SPECIFIERS).map(escapeRegExp).join("|")})$|@/)`,
     caseSensitive: true,
-    message: "Runtime source imports only next, react, react-dom and repository files through @/.",
+    message: "Runtime source imports only type-only next/server, type-only next and repository files through @/.",
+  },
+  {
+    regex: `^(?:${Object.keys(RUNTIME_ALLOWED_SPECIFIERS).map(escapeRegExp).join("|")})$`,
+    caseSensitive: true,
+    allowTypeImports: true,
+    message: "Runtime source imports next and next/server as types only; no runtime value from the next package tree.",
   },
 ]);
 

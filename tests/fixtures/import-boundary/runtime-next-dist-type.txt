@@ -1,0 +1,3 @@
+import type { PageModule } from "next/dist/server/require";
+
+export type Planted = PageModule;
