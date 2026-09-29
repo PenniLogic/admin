@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import path from "node:path";
@@ -166,6 +166,25 @@ describe("production server", () => {
     const denied = await fetch(`${origin}/double`, { redirect: "manual" });
     expect(denied.status).toBe(403);
     expectDenialHeaders(denied.headers);
+  });
+
+  it("denies built static assets and the image optimizer even though the files exist", async () => {
+    const staticRoot = path.join(ROOT, ".next", "static");
+    const asset = readdirSync(staticRoot, { recursive: true, withFileTypes: true }).find(
+      (entry) => entry.isFile() && entry.name.endsWith(".js"),
+    );
+    expect(asset).toBeDefined();
+    const relative = path.relative(staticRoot, path.join(asset?.parentPath ?? staticRoot, asset?.name ?? "")).split(path.sep).join("/");
+    const buildId = readFileSync(path.join(ROOT, ".next", "BUILD_ID"), "utf8").trim();
+    for (const requestPath of [
+      `/_next/static/${relative}`,
+      `/_next/static/${buildId}/_buildManifest.js`,
+      `/_next/image?url=${encodeURIComponent(`/_next/static/${relative}`)}&w=64&q=75`,
+    ]) {
+      const response = await fetch(`${origin}${requestPath}`, { redirect: "manual" });
+      expect(response.status, requestPath).toBe(403);
+      expectDenialHeaders(response.headers);
+    }
   });
 
   it("logs no request-identifying output while serving denials", () => {
