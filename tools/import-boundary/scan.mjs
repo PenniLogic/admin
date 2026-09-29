@@ -133,7 +133,13 @@ function memberName(node) {
  */
 function objectName(object) {
   let inner = object;
-  while (ts.isParenthesizedExpression(inner) || ts.isNonNullExpression(inner) || ts.isAsExpression(inner) || ts.isTypeAssertionExpression(inner)) {
+  while (
+    ts.isParenthesizedExpression(inner) ||
+    ts.isNonNullExpression(inner) ||
+    ts.isAsExpression(inner) ||
+    ts.isSatisfiesExpression(inner) ||
+    ts.isTypeAssertionExpression(inner)
+  ) {
     inner = inner.expression;
   }
   if (ts.isIdentifier(inner)) {
@@ -291,6 +297,10 @@ export function parseSource(source, fileName, options = {}) {
         } else {
           parsed.specifiers.push({ specifier: literal, line: lineOf(node), typeOnly: false });
           noteLoaderBuiltin(literal, node);
+        }
+        if (runtime) {
+          // Dynamic loading has no place in the deny-only runtime, whatever the specifier.
+          record(parsed.runtimeReferences, isDynamicImport ? "import()" : "require()", node);
         }
         // The callee identifier is legitimate here; skip it and visit the arguments only.
         for (const argumentNode of node.arguments) {
@@ -454,16 +464,18 @@ export function checkSpecifier(specifier, file, context) {
 }
 
 /**
- * Checks a specifier against the exact runtime allowlist; only called for runtime source. A
- * repository file through `@/` is always acceptable; an allowed package specifier must match
- * exactly and, when the entry says so, be imported as types only.
+ * Checks a specifier against the exact runtime allowlist; only called for runtime source. The
+ * runtime set is closed: a repository file through `@/` is acceptable only when the target is
+ * itself runtime source (`proxy.ts`, `next.config.ts`, `app/**`, `src/**`), so tooling, tests and
+ * configuration — which follow the looser rules — can never be pulled into the server. An allowed
+ * package specifier must match exactly and, when the entry says so, be imported as types only.
  * @param {string} specifier
  * @param {boolean} [typeOnly] whether the import carries no runtime value
  * @returns {boolean}
  */
 export function isRuntimeAllowedSpecifier(specifier, typeOnly = false) {
   if (specifier.startsWith("@/")) {
-    return true;
+    return isRuntimeRelativePath(specifier.slice(2));
   }
   if (!Object.prototype.hasOwnProperty.call(RUNTIME_ALLOWED_SPECIFIERS, specifier)) {
     return false;
@@ -472,8 +484,20 @@ export function isRuntimeAllowedSpecifier(specifier, typeOnly = false) {
   return !entry.typeOnly || typeOnly;
 }
 
+/**
+ * Whether a root-relative POSIX path (as written after `@/`) names runtime source: a runtime file by
+ * its exact name, with its real extension or none, or any file below a runtime directory.
+ * @param {string} relative
+ */
+function isRuntimeRelativePath(relative) {
+  if (RUNTIME_FILES.some((file) => relative === file || relative === file.replace(/\.[cm]?[jt]sx?$/, ""))) {
+    return true;
+  }
+  return RUNTIME_DIRECTORIES.some((directory) => relative.startsWith(`${directory}/`) && relative.length > directory.length + 1);
+}
+
 const RUNTIME_IMPORT_MESSAGE =
-  "Runtime source imports only type-only next/server, type-only next and repository files through @/; trust is not delegated to package internals.";
+  "Runtime source imports only type-only next/server, type-only next and runtime repository files (@/app, @/src, @/proxy, @/next.config); trust is not delegated to package internals, tooling or tests.";
 
 /**
  * Checks every import and refused construct of one source text.

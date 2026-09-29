@@ -1,0 +1,7 @@
+import { authorize } from "@/src/boundary/authorize";
+import { DENIAL_STATUS } from "@/src/boundary/denial";
+import { proxy } from "@/proxy";
+import config from "@/next.config";
+import { dynamic } from "@/app/[[...path]]/route";
+
+export const planted = [authorize, DENIAL_STATUS, proxy, config, dynamic] as const;

@@ -1,0 +1,3 @@
+import config from "@/vitest.config.mts";
+
+export const planted = config;

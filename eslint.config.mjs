@@ -28,14 +28,27 @@ const loaderBuiltinPaths = (allowed) =>
     .flatMap((name) => [name, `node:${name}`])
     .map((name) => ({ name, message: "Code-loading and process builtins are refused outside the files allowed in policy.mjs." }));
 
+/** The bindings whose computed access is refused; TypeScript wrappers around them are looked through. */
+const refusedObjects = "/^(process|globalThis|module|require|window|self)$/";
+const tsWrapper = ":matches(TSAsExpression, TSSatisfiesExpression, TSNonNullExpression, TSTypeAssertion)";
+
 const sharedRestrictedSyntax = [
   {
     selector: "MemberExpression[object.type='MetaProperty'][property.name='resolve']",
     message: "import.meta.resolve assembles specifiers at run time and is refused.",
   },
   {
-    selector: "MemberExpression[computed=true][object.name=/^(process|globalThis|module|require|window|self)$/]",
+    selector: `MemberExpression[computed=true][object.name=${refusedObjects}]`,
     message: "Computed member access on process, globalThis, module, require, window or self is refused.",
+  },
+  {
+    // Best-effort mirror of the scanner's look-through: up to three TypeScript wrappers deep.
+    selector: [
+      `MemberExpression[computed=true] > ${tsWrapper}.object > Identifier.expression[name=${refusedObjects}]`,
+      `MemberExpression[computed=true] > ${tsWrapper}.object > ${tsWrapper}.expression > Identifier.expression[name=${refusedObjects}]`,
+      `MemberExpression[computed=true] > ${tsWrapper}.object > ${tsWrapper}.expression > ${tsWrapper}.expression > Identifier.expression[name=${refusedObjects}]`,
+    ].join(", "),
+    message: "Computed member access on a TypeScript-wrapped process, globalThis, module, require, window or self is refused.",
   },
   {
     selector: "MemberExpression[computed=true][object.type='MetaProperty']",
@@ -142,6 +155,11 @@ export default defineConfig([
         {
           selector: "ThisExpression",
           message: "Runtime source does not reference this.",
+        },
+        {
+          // Dynamic import() carries a runtime value by definition, so no specifier is acceptable.
+          selector: "ImportExpression",
+          message: "Runtime source uses no dynamic import(); every import is static and type-only or a runtime repository file.",
         },
         {
           selector: "Identifier[name='require']",

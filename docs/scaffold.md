@@ -9,11 +9,13 @@ This scaffold makes that separation structural from the first commit:
 - **Deny-only boundary.** No administrative identity provider is configured, so `proxy.ts` refuses
   every request the framework forwards, before routing; the catch-all route is a backstop behind it.
 - **Import boundary.** Runtime source (`proxy.ts`, `app/**`, `src/**`, `next.config.ts`) imports
-  exactly two package specifiers, both as types only — `next/server` and `next` — plus repository
-  files through `@/`, and references no process, global, module-system, network or timer identifier,
-  no `this`, and no computed member or key. Trust is not delegated to any package tree: no runtime
-  value is imported from `next` at all. Every other source file may import only Node.js builtins,
-  repository files and packages declared in `package.json` and resolved from the public npm
+  exactly two package specifiers, both as types only — `next/server` and `next` — plus other
+  runtime files through `@/` (the runtime set is closed: tooling, tests and configuration are never
+  imported), and references no process, global, module-system, network or timer identifier, no
+  `this`, no dynamic `import()`, and no computed member or key. Trust is not delegated to any
+  package tree, tooling or test: no runtime value is imported from `next` at all. Every other source
+  file may import only Node.js builtins (code-loading and network builtins only in five listed
+  files), repository files and packages declared in `package.json` and resolved from the public npm
   registry. Customer web code, shared client bundles and every PenniLogic package are refused; the
   enumerated loader names, `Reflect`, computed member access on the module-system bindings,
   non-literal dynamic specifiers, links and dot-segment subpaths are refused; and the compiler,
@@ -132,16 +134,19 @@ The guarantee is enumerated, not open-ended. What the scanner enforces:
 
 | Rule | Enforces |
 | --- | --- |
-| `runtime-import-not-allowed` | Exactly two package specifiers may be imported, each **as types only**: `next/server` (`NextRequest`, `NextResponse` types) and `next` (`NextConfig`). Repository files may be imported through `@/`. Everything else is refused: `next/dist/*`, `next/dist/compiled/*`, `next/navigation`, `next/headers`, any other `next/*` subpath, `react`, `react-dom`, `react-dom/server`, relative paths, Node.js builtins and every other package. A value import, default import, side-effect import, `export * from` or mixed type-and-value import of `next`/`next/server` is refused. `react`/`react-dom` join the list only when a component exists, by a reviewed change; `next/dist/*` and `react-dom/server` never |
-| `runtime-reference-not-allowed` | No reference, as an identifier or a string-literal member key, to `process`, `globalThis`, `global`, `window`, `self`, `module`, `exports`, `require`, `eval`, `Function`, `Reflect`, `Proxy`, `WebAssembly`, `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `Worker`, `SharedWorker`, `importScripts`, `setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`, `structuredClone`, `AsyncFunction`, `GeneratorFunction`, `AsyncGeneratorFunction`, `import.meta` / `new.target`, or `this` in any position |
+| `runtime-import-not-allowed` | Exactly two package specifiers may be imported, each **as types only**: `next/server` (`NextRequest`, `NextResponse` types) and `next` (`NextConfig`). Repository files may be imported through `@/` **only when the target is itself runtime source** — `@/proxy`, `@/next.config` (with their real extension or none), `@/app/**`, `@/src/**` — so the runtime set is closed: `@/tools/**`, `@/tests/**`, `@/eslint.config.mjs`, `@/vitest.config.mts`, `@/node_modules/**` and every other repository path are refused, because those files follow the looser rules. Everything else is refused: `next/dist/*`, `next/dist/compiled/*`, `next/navigation`, `next/headers`, any other `next/*` subpath, `react`, `react-dom`, `react-dom/server`, relative paths, Node.js builtins and every other package. A value import, default import, side-effect import, `export * from` or mixed type-and-value import of `next`/`next/server` is refused. `react`/`react-dom` join the list only when a component exists, by a reviewed change; `next/dist/*` and `react-dom/server` never |
+| `runtime-reference-not-allowed` | No reference, as an identifier or a string-literal member key, to `process`, `globalThis`, `global`, `window`, `self`, `module`, `exports`, `require`, `eval`, `Function`, `Reflect`, `Proxy`, `WebAssembly`, `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `Worker`, `SharedWorker`, `importScripts`, `setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`, `structuredClone`, `AsyncFunction`, `GeneratorFunction`, `AsyncGeneratorFunction`, `import.meta` / `new.target`, or `this` in any position; and no dynamic `import()` or `require()` call at all, whatever the specifier |
 | `computed-member-access` | No computed member access and no computed property key (object literals, classes, destructuring patterns) except numeric or string-literal keys (`a[0]`, `a["b"]`, `{ ["b"]: 1 }`) |
 
-Trust is not delegated to package internals: `next` 16 has no `exports` map, so its internals
-(`next/dist/server/require`, `next/dist/server/load-manifest.external`, ...) hold real `require()`
-and `vm` evaluators and would resolve from runtime files; the exact type-only allowlist is what keeps
-them out. The deny-only runtime needs no runtime value from any package, so this is structural: a
-loader assembled from computed members, fetched through `process`, reached through `Reflect` or
-imported from a package tree cannot be written in runtime source without tripping a rule.
+Trust is not delegated to package internals, tooling or tests: `next` 16 has no `exports` map, so
+its internals (`next/dist/server/require`, `next/dist/server/load-manifest.external`, ...) hold real
+`require()` and `vm` evaluators and would resolve from runtime files; tooling and test files may
+legitimately import `eslint`, `typescript`, `node:net` or `node:child_process`. The exact type-only
+allowlist and the closed `@/` set are what keep both out. The deny-only runtime needs no runtime
+value from any package and nothing from outside `proxy.ts`, `next.config.ts`, `app/**` and `src/**`,
+so this is structural: a loader or a socket assembled from computed members, fetched through
+`process`, reached through `Reflect`, imported from a package tree or wrapped in a tooling helper
+cannot be written in runtime source without tripping a rule.
 
 Name strictness in runtime source: the refused identifiers are refused in every position, so an
 object key, interface property or parameter named `self`, `global`, `module`, `exports`, `window`
@@ -156,8 +161,8 @@ or `process` is reported too; choose another name.
 | `escapes-repository` | Relative, alias (`@/`) or triple-slash targets whose real path (links resolved) is outside this repository or inside `node_modules`; every symbolic link or junction found inside the tree (refused rather than followed); bare package subpaths containing a `.` or `..` segment; any specifier containing a backslash or percent-encoding |
 | `absolute-or-remote-specifier` | Absolute paths, drive letters, `file:`, `http(s):`, `data:`, direct `node_modules/` and package subpath (`#name`) specifiers |
 | `non-literal-dynamic-specifier` | Any dynamic `import()` or `require()` whose argument list is not exactly one plain string literal: variables, concatenation, method calls, template placeholders, a second (attributes) argument |
-| `indirect-module-loader` | Any reference (identifier, property name or string-literal element key) to `createRequire`, `eval`, `Function`, `constructor`, `Reflect`, `getBuiltinModule`, `binding`, `dlopen`, `mainModule`, `_load`, `runInThisContext`, `runInNewContext`, `runInContext`, `compileFunction`; `new Function`; `require.resolve`; `import.meta.resolve`; `require` in any position other than the callee of a direct call (`module.require`, `require.main.require`, `const r = require`); importing `module`, `vm`, `worker_threads`, `child_process` or `process` outside the four files listed in `LOADER_BUILTIN_ALLOWANCES` (the scanner itself for `builtinModules`, the Next CLI wrapper and two tests for `child_process`) — the ESLint mirror applies the same per-file allowance, so both stages agree |
-| `computed-member-access` | Element access with a non-literal key on `process`, `globalThis`, `module`, `require`, `window`, `self`, `import.meta`, or any binding imported from a loader builtin in that file |
+| `indirect-module-loader` | Any reference (identifier, property name or string-literal element key) to `createRequire`, `eval`, `Function`, `constructor`, `Reflect`, `getBuiltinModule`, `binding`, `dlopen`, `mainModule`, `_load`, `runInThisContext`, `runInNewContext`, `runInContext`, `compileFunction`; `new Function`; `require.resolve`; `import.meta.resolve`; `require` in any position other than the callee of a direct call (`module.require`, `require.main.require`, `const r = require`); importing the code-loading builtins `module`, `vm`, `worker_threads`, `child_process`, `process` or the network builtins `net`, `http`, `https`, `http2`, `dns`, `dgram`, `tls` outside the five files listed in `LOADER_BUILTIN_ALLOWANCES` (the scanner itself for `builtinModules`; the Next CLI wrapper and two tests for `child_process`; the smoke test and its raw HTTP client for `net`) — the ESLint mirror applies the same per-file allowance, so both stages agree |
+| `computed-member-access` | Element access with a non-literal key on `process`, `globalThis`, `module`, `require`, `window`, `self`, `import.meta`, or any binding imported from a loader builtin in that file, looking through parentheses, `!`, `as`, `satisfies` and `<T>` assertions |
 | `undeclared-dependency` | Bare specifiers whose package is not declared in `package.json`; `node:` specifiers that do not name a real builtin |
 | `non-registry-or-inexact-dependency` | `file:`, `link:`, `workspace:`, git, URL, `npm:` alias or range versions |
 | `workspace-or-bundled-dependency` | `workspaces`, `bundleDependencies`, `bundledDependencies`, `overrides` or `imports` in the manifest |
@@ -176,9 +181,13 @@ acceptable.
 
 What the scanner does **not** cover: behaviour of installed packages themselves (provenance is the
 control there); code loading that starts outside this repository (the deployment edge and the
-runtime allowlist are the controls there); and, for tooling and test files, filesystem reads of
-arbitrary paths through `node:fs` — acceptable for tooling that must read the repository, and
-irrelevant to the runtime, which cannot import `node:fs` at all.
+runtime allowlist are the controls there); for tooling and test files, filesystem reads of arbitrary
+paths through `node:fs` — acceptable for tooling that must read the repository, and irrelevant to
+the runtime, which cannot import `node:fs` at all; and, for tooling and test files only, the
+alias/data-flow class of computed access — `const p = process; p[key]`, `(0, process)[key]`,
+`Object.entries(process)`, a `globalThis.process` alias — which the syntactic rules do not follow
+through variables. That class is refused in runtime source outright (no `process`, `globalThis` or
+computed access at all), so it is a tooling residual, and tooling is never imported by the runtime.
 
 The static-import name rules, the loader names and the runtime allowlist are mirrored into ESLint
 (`no-restricted-imports` patterns and paths, `no-restricted-globals` for runtime source, `no-eval`,
@@ -197,7 +206,7 @@ absence of any cookie handling.
 | Acceptance criterion | Evidence |
 | --- | --- |
 | Clean clone builds, lints and tests with the documented commands | `npm ci && npm run verify` locally and in the native `CI` job (recorded in the pull request) |
-| An attempted import of customer web code fails the pipeline | `tests/unit/import-boundary.test.ts` — planted fixtures for every form (static, type-only, `import =`, type-position `import()`, dynamic, concatenated, two-argument, commented, template, variable, `createRequire`, `getBuiltinModule` proxy, `next/dist` `evalManifest` and `requirePage` proxies, computed members and keys, `eval`, `Function`, `.constructor`, `Reflect`, `require.resolve`, `import.meta.resolve`, aliased and member `require`, `vm`/`worker_threads`/`child_process`, relative/alias/triple-slash/percent-encoded escapes, links, package dot-segment subpaths, subpath imports, absolute/remote, runtime value imports of `next`/`react`/`react-dom`, runtime builtin/package/global/`this` references), planted into a copy of the repository and into an existing runtime file, command-line exit 1, ESLint mirror, configuration surfaces and configuration siblings |
+| An attempted import of customer web code fails the pipeline | `tests/unit/import-boundary.test.ts` — planted fixtures for every form (static, type-only, `import =`, type-position `import()`, dynamic, concatenated, two-argument, commented, template, variable, `createRequire`, `getBuiltinModule` proxy, `next/dist` `evalManifest` and `requirePage` proxies, tooling-helper loader and test-client egress proxies through `@/`, `@/` imports of configuration, tests and tooling, computed members and keys (including TypeScript-wrapped objects), `eval`, `Function`, `.constructor`, `Reflect`, `require.resolve`, `import.meta.resolve`, aliased and member `require`, `vm`/`worker_threads`/`child_process`, relative/alias/triple-slash/percent-encoded escapes, links, package dot-segment subpaths, subpath imports, absolute/remote, runtime value imports of `next`/`react`/`react-dom`, runtime dynamic `import()`, network builtins outside their allowances, runtime builtin/package/global/`this` references), planted into a copy of the repository and into an existing runtime file, command-line exit 1, ESLint mirror, configuration surfaces and configuration siblings |
 | The default route returns a denial | `tests/unit/proxy.test.ts`, `tests/unit/route.test.ts`, `tests/smoke/server.test.ts` |
 | No customer session cookie name or domain appears anywhere | `tests/unit/no-customer-artifacts.test.ts` — no cookie handling, no hostname literals outside tooling hosts, registry-only lockfile, no customer-like fixtures, no links in the tree, no process/global/module/loader reference in runtime source, exactly one Next.js configuration file |
 | Admin API only, never the customer API | This document and `ALLOWED_ORGANIZATION_PACKAGES` in `policy.mjs` |

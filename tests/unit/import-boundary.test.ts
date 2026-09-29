@@ -26,6 +26,7 @@ import {
   RESTRICTED_IMPORT_PATTERNS,
   RESTRICTED_LOADER_BUILTIN_PATHS,
   RULES,
+  RUNTIME_ALIAS_PATTERN_SOURCE,
   RUNTIME_ALLOWED_SPECIFIERS,
   RUNTIME_REFUSED_IDENTIFIERS,
   RUNTIME_RESTRICTED_GLOBALS,
@@ -132,18 +133,36 @@ const PLANTED: Record<string, string> = {
   "runtime-react-dom-server.txt": RULES.runtimeImport,
   "s9-evalmanifest-proxy.txt": RULES.runtimeImport,
   "s9-requirepage-proxy.txt": RULES.runtimeImport,
+  "s11-tools-helper-proxy.txt": RULES.runtimeImport,
+  "s11-tests-raw-http-proxy.txt": RULES.runtimeImport,
+  "runtime-alias-eslint-config.txt": RULES.runtimeImport,
+  "runtime-alias-vitest-config.txt": RULES.runtimeImport,
+  "runtime-alias-tests.txt": RULES.runtimeImport,
+  "runtime-alias-tools-policy.txt": RULES.runtimeImport,
+  "runtime-alias-prefix-trick.txt": RULES.runtimeImport,
+  "runtime-alias-bare-directory.txt": RULES.runtimeImport,
+  "runtime-dynamic-import-next-dist.txt": RULES.runtimeReference,
+  "runtime-dynamic-import-alias.txt": RULES.runtimeReference,
   "runtime-fetch.txt": RULES.runtimeReference,
   "runtime-timer.txt": RULES.runtimeReference,
   "runtime-globalthis.txt": RULES.runtimeReference,
   "runtime-this.txt": RULES.runtimeReference,
   "runtime-computed-destructuring.txt": RULES.computedAccess,
   "reflect-get-process.txt": RULES.indirectLoader,
+  "satisfies-wrapped-process.txt": RULES.computedAccess,
+  "asserted-wrapped-globalthis.txt": RULES.computedAccess,
+  "net-loader.txt": RULES.indirectLoader,
+  "http-loader.txt": RULES.indirectLoader,
 };
 /** A comment inside the call does not hide a literal specifier; the package rule still applies. */
 const PLANTED_WITH_COMMENT = { "commented-dynamic-import.txt": RULES.organizationPackage };
 const CONTROLS = ["clean-source.txt", "clean-module.txt"];
-/** Clean when planted as runtime source: type-only next imports, literal computed keys, `@/` files. */
-const RUNTIME_CONTROLS = ["clean-runtime-types.txt"];
+/** Clean when planted as runtime source: type-only next imports, literal computed keys, runtime `@/` files. */
+const RUNTIME_CONTROLS = ["clean-runtime-types.txt", "clean-runtime-alias.txt"];
+/** Fixtures whose syntax exists only in TypeScript; planted with a .ts name outside runtime source. */
+const TYPESCRIPT_ONLY = ["satisfies-wrapped-process.txt", "asserted-wrapped-globalthis.txt"];
+/** Source planted as a tooling file by the S11 loader reproduction; clean on its own, unreachable from the runtime. */
+const TOOL_SUPPORT_FIXTURES = ["s11-tools-helper.txt"];
 /** Fixtures that are clean everywhere except in runtime source, where the positive allowlist applies. */
 const RUNTIME_ONLY = [
   "runtime-node-builtin.txt",
@@ -158,6 +177,16 @@ const RUNTIME_ONLY = [
   "runtime-react-dom-server.txt",
   "s9-evalmanifest-proxy.txt",
   "s9-requirepage-proxy.txt",
+  "s11-tools-helper-proxy.txt",
+  "s11-tests-raw-http-proxy.txt",
+  "runtime-alias-eslint-config.txt",
+  "runtime-alias-vitest-config.txt",
+  "runtime-alias-tests.txt",
+  "runtime-alias-tools-policy.txt",
+  "runtime-alias-prefix-trick.txt",
+  "runtime-alias-bare-directory.txt",
+  "runtime-dynamic-import-next-dist.txt",
+  "runtime-dynamic-import-alias.txt",
   "runtime-fetch.txt",
   "runtime-timer.txt",
   "runtime-globalthis.txt",
@@ -247,9 +276,41 @@ describe("import boundary of the real repository", () => {
       expect(isRuntimeFile(ROOT, path.join(ROOT, file)), file).toBe(false);
     }
     expect(RUNTIME_ALLOWED_SPECIFIERS).toEqual({ "next/server": { typeOnly: true }, next: { typeOnly: true } });
-    for (const specifier of ["@/proxy", "@/src/boundary/denial"]) {
+    // The runtime set is closed under `@/`: only runtime files and directories may be imported.
+    for (const specifier of [
+      "@/proxy",
+      "@/proxy.ts",
+      "@/next.config",
+      "@/next.config.ts",
+      "@/src/boundary/denial",
+      "@/src/boundary/denial.ts",
+      "@/app/[[...path]]/route",
+      "@/app/(group)/deep/page.tsx",
+    ]) {
       expect(isRuntimeAllowedSpecifier(specifier), specifier).toBe(true);
       expect(isRuntimeAllowedSpecifier(specifier, true), specifier).toBe(true);
+    }
+    for (const specifier of [
+      "@/tools/helper.mjs",
+      "@/tools/import-boundary/policy.mjs",
+      "@/tests/support/raw-http",
+      "@/tests/unit/proxy.test",
+      "@/eslint.config.mjs",
+      "@/vitest.config.mts",
+      "@/package.json",
+      "@/node_modules/next/server",
+      "@/srcfile",
+      "@/src",
+      "@/src/",
+      "@/app",
+      "@/apps/x",
+      "@/proxy.d.ts",
+      "@/proxy.test.ts",
+      "@/next.config.mjs",
+      "@/",
+    ]) {
+      expect(isRuntimeAllowedSpecifier(specifier), specifier).toBe(false);
+      expect(isRuntimeAllowedSpecifier(specifier, true), specifier).toBe(false);
     }
     for (const specifier of ["next", "next/server"]) {
       expect(isRuntimeAllowedSpecifier(specifier, true), `${specifier} as types`).toBe(true);
@@ -314,7 +375,7 @@ describe("import boundary of the real repository", () => {
 describe("planted forbidden imports", () => {
   it("covers every fixture exactly once", () => {
     expect(readdirSync(FIXTURES).sort()).toEqual(
-      [...Object.keys(PLANTED), ...Object.keys(PLANTED_WITH_COMMENT), ...CONTROLS, ...RUNTIME_CONTROLS].sort(),
+      [...Object.keys(PLANTED), ...Object.keys(PLANTED_WITH_COMMENT), ...CONTROLS, ...RUNTIME_CONTROLS, ...TOOL_SUPPORT_FIXTURES].sort(),
     );
     expect(RUNTIME_ONLY.every((name) => name in PLANTED)).toBe(true);
   });
@@ -337,7 +398,9 @@ describe("planted forbidden imports", () => {
   it.each(Object.entries(PLANTED).filter(([name]) => !RUNTIME_ONLY.includes(name)))(
     "%s is still refused (rule %s) when planted outside runtime source",
     (name, rule) => {
-      const violations = checkSource(fixture(name), TOOL_PLANT, context);
+      // TypeScript-only syntax is planted as a tooling test file; everything else as module JavaScript.
+      const plant = TYPESCRIPT_ONLY.includes(name) ? path.join(ROOT, "tests", "unit", "planted.test.ts") : TOOL_PLANT;
+      const violations = checkSource(fixture(name), plant, context);
       expect(violations.map((violation) => violation.rule), name).toContain(rule);
     },
   );
@@ -353,6 +416,11 @@ describe("planted forbidden imports", () => {
   it.each(RUNTIME_CONTROLS)("%s passes as a clean runtime control", (name) => {
     expect(checkSource(fixture(name), RUNTIME_PLANT, context)).toEqual([]);
     expect(checkSource(fixture(name), path.join(ROOT, "proxy.ts"), context)).toEqual([]);
+  });
+
+  it.each(TOOL_SUPPORT_FIXTURES)("%s is clean as a tooling file yet unreachable from the runtime", (name) => {
+    expect(checkSource(fixture(name), path.join(ROOT, "tools", "helper.mjs"), context)).toEqual([]);
+    expect(isRuntimeAllowedSpecifier("@/tools/helper.mjs")).toBe(false);
   });
 
   it("refuses the reproduced getBuiltinModule proxy on three independent rules", () => {
@@ -383,6 +451,33 @@ describe("planted forbidden imports", () => {
         expect(run.stderr, name).toContain("Import boundary violated: 1 finding(s)");
       });
     }
+  });
+
+  it("keeps the runtime set closed: proxies reaching tooling or tests through @/ fail the scan and the command line", () => {
+    // K: a clean tooling helper that wraps a real loader; the helper itself passes, the runtime import of it does not.
+    withPlantedRepository({ "proxy.ts": fixture("s11-tools-helper-proxy.txt"), "tools/helper.mjs": fixture("s11-tools-helper.txt") }, (root) => {
+      const result = scanRepository(root);
+      expect(result.violations.map((violation) => [violation.rule, violation.file, violation.specifier, violation.line])).toEqual([
+        [RULES.runtimeImport, "proxy.ts", "@/tools/helper.mjs", 5],
+      ]);
+      const run = spawnSync(process.execPath, [CHECK_CLI, "--root", root], { cwd: ROOT, encoding: "utf8" });
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain(`${RULES.runtimeImport}: proxy.ts:5 -> @/tools/helper.mjs`);
+    });
+    // J: the test-support raw socket client imported into the runtime.
+    withPlantedRepository({ "proxy.ts": fixture("s11-tests-raw-http-proxy.txt") }, (root) => {
+      const result = scanRepository(root);
+      expect(result.violations.map((violation) => [violation.rule, violation.file, violation.specifier, violation.line])).toEqual([
+        [RULES.runtimeImport, "proxy.ts", "@/tests/support/raw-http", 5],
+      ]);
+      const run = spawnSync(process.execPath, [CHECK_CLI, "--root", root], { cwd: ROOT, encoding: "utf8" });
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain(`${RULES.runtimeImport}: proxy.ts:5 -> @/tests/support/raw-http`);
+    });
+    // A runtime file importing another runtime file through @/ stays acceptable end to end.
+    withPlantedRepository({ "src/planted.ts": fixture("clean-runtime-alias.txt") }, (root) => {
+      expect(scanRepository(root).violations).toEqual([]);
+    });
   });
 
   it("records whether each specifier is type-only and judges the runtime allowlist by it", () => {
@@ -612,9 +707,17 @@ describe("specifier rules", () => {
     ]);
     expect(Object.keys(LOADER_BUILTIN_ALLOWANCES).sort()).toEqual([
       "tests/smoke/server.test.ts",
+      "tests/support/raw-http.ts",
       "tests/unit/import-boundary.test.ts",
       "tools/import-boundary/scan.mjs",
       "tools/next-cli.mjs",
+    ]);
+    expect(checkSource(fixture("net-loader.txt"), path.join(ROOT, "tests", "support", "raw-http.ts"), context)).toEqual([]);
+    expect(checkSource(fixture("net-loader.txt"), path.join(ROOT, "tests", "support", "other.ts"), context).map((violation) => violation.rule)).toEqual([
+      RULES.indirectLoader,
+    ]);
+    expect(checkSource(fixture("http-loader.txt"), path.join(ROOT, "tests", "support", "raw-http.ts"), context).map((violation) => violation.rule)).toEqual([
+      RULES.indirectLoader,
     ]);
   });
 
@@ -639,6 +742,12 @@ describe("specifier rules", () => {
       { specifier: '(import.meta)["res" + "olve"]', line: 1 },
     ]);
     expect(parseSource('const k = "x"; export const planted = (process as unknown as Record<string, unknown>)[k];\n', "planted.ts").computed).toHaveLength(1);
+    expect(parseSource(fixture("satisfies-wrapped-process.txt"), "planted.ts").computed).toEqual([
+      { specifier: '((process satisfies object) as unknown as Record<string, unknown>)["getBuiltin" + "Module"]', line: 1 },
+    ]);
+    expect(parseSource(fixture("asserted-wrapped-globalthis.txt"), "planted.ts").computed).toEqual([
+      { specifier: '(<Record<string, unknown>>globalThis!)["Func" + "tion"]', line: 1 },
+    ]);
     expect(parseSource('export const planted = process!["binding"];\n', "planted.ts").loaders.map((entry) => entry.specifier)).toEqual(["binding"]);
     // Outside runtime source, computed access on ordinary objects stays acceptable.
     expect(parseSource("const o = { a: 1 }; const k = 'a'; export const planted = o[k];\n", "planted.mjs").computed).toEqual([]);
@@ -1051,6 +1160,16 @@ describe("ESLint mirror", () => {
     "s7-getbuiltinmodule-proxy.txt",
     "s9-evalmanifest-proxy.txt",
     "s9-requirepage-proxy.txt",
+    "s11-tools-helper-proxy.txt",
+    "s11-tests-raw-http-proxy.txt",
+    "runtime-alias-eslint-config.txt",
+    "runtime-alias-vitest-config.txt",
+    "runtime-alias-tests.txt",
+    "runtime-alias-tools-policy.txt",
+    "runtime-alias-prefix-trick.txt",
+    "runtime-alias-bare-directory.txt",
+    "runtime-dynamic-import-next-dist.txt",
+    "runtime-dynamic-import-alias.txt",
     "runtime-node-builtin.txt",
     "runtime-dev-package.txt",
     "runtime-next-value-import.txt",
@@ -1068,7 +1187,10 @@ describe("ESLint mirror", () => {
     "runtime-computed-destructuring.txt",
     "computed-module-binding.txt",
     "clean-runtime-types.txt",
+    "clean-runtime-alias.txt",
   ];
+  /** TypeScript-only forms, linted as a tooling test file where type syntax is parsed. */
+  const lintedAsTypeScript = ["satisfies-wrapped-process.txt", "asserted-wrapped-globalthis.txt", "net-loader.txt", "http-loader.txt"];
   interface Message {
     ruleId: string | null;
     severity: number;
@@ -1088,6 +1210,7 @@ describe("ESLint mirror", () => {
         lint: [
           ...linted.map((name) => ({ name, filePath: "tools/planted.mjs", source: fixture(name) })),
           ...lintedAsRuntime.map((name) => ({ name: `runtime:${name}`, filePath: "src/planted.ts", source: fixture(name) })),
+          ...lintedAsTypeScript.map((name) => ({ name: `ts:${name}`, filePath: "tests/unit/planted.test.ts", source: fixture(name) })),
         ],
       }),
     });
@@ -1120,10 +1243,13 @@ describe("ESLint mirror", () => {
     const smokePaths = (configs["tests/smoke/server.test.ts"] as [number, { paths: { name: string }[] }])[1].paths.map((entry) => entry.name);
     expect(smokePaths).not.toContain("child_process");
     expect(smokePaths).not.toContain("node:child_process");
-    expect(smokePaths).toEqual(expect.arrayContaining(["vm", "node:vm", "worker_threads", "node:worker_threads", "process", "node:process"]));
+    expect(smokePaths).not.toContain("net");
+    expect(smokePaths).toEqual(expect.arrayContaining(["vm", "node:vm", "worker_threads", "node:worker_threads", "process", "node:process", "http", "node:https", "dns", "dgram", "tls", "http2"]));
+    const toolPaths = (configs["tools/planted.mjs"] as [number, { paths: { name: string }[] }])[1].paths.map((entry) => entry.name);
+    expect(toolPaths).toEqual(expect.arrayContaining(["net", "node:net", "http", "https", "child_process"]));
   });
 
-  it("adds the exact type-only import allowlist and the restricted globals for runtime source", () => {
+  it("adds the exact type-only import allowlist, the closed @/ set and the restricted globals for runtime source", () => {
     for (const file of runtimeConfigFiles) {
       expect(configs[file], file).toEqual([
         2,
@@ -1134,14 +1260,42 @@ describe("ESLint mirror", () => {
       ]);
     }
     expect(RUNTIME_RESTRICTED_GLOBALS.map((entry) => entry.name)).toEqual([...RUNTIME_REFUSED_IDENTIFIERS]);
-    expect(RUNTIME_RESTRICTED_IMPORT_PATTERNS.map((entry) => entry.regex)).toEqual(["^(?!(?:next\\/server|next)$|@/)", "^(?:next\\/server|next)$"]);
+    expect(RUNTIME_RESTRICTED_IMPORT_PATTERNS.map((entry) => entry.regex)).toEqual([
+      `^(?!(?:next\\/server|next)$|${RUNTIME_ALIAS_PATTERN_SOURCE})`,
+      "^(?:next\\/server|next)$",
+    ]);
+    expect(RUNTIME_ALIAS_PATTERN_SOURCE).toBe("@/(?:proxy(?:\\.ts)?|next\\.config(?:\\.ts)?|app/.+|src/.+)$");
     expect(RUNTIME_RESTRICTED_IMPORT_PATTERNS[1]?.allowTypeImports).toBe(true);
     const refusedUnlessExact = new RegExp(RUNTIME_RESTRICTED_IMPORT_PATTERNS[0]?.regex ?? "");
-    for (const specifier of ["next", "next/server", "@/proxy"]) {
+    for (const specifier of ["next", "next/server", "@/proxy", "@/proxy.ts", "@/next.config", "@/src/boundary/denial", "@/app/[[...path]]/route"]) {
       expect(refusedUnlessExact.test(specifier), specifier).toBe(false);
     }
-    for (const specifier of ["next/dist/server/require", "next/navigation", "react", "react-dom", "react-dom/server", "node:fs", "typescript", "nextjs", "./x", "../x"]) {
+    for (const specifier of [
+      "next/dist/server/require",
+      "next/navigation",
+      "react",
+      "react-dom",
+      "react-dom/server",
+      "node:fs",
+      "typescript",
+      "nextjs",
+      "./x",
+      "../x",
+      "@/tools/helper.mjs",
+      "@/tests/support/raw-http",
+      "@/eslint.config.mjs",
+      "@/vitest.config.mts",
+      "@/node_modules/next/server",
+      "@/srcfile",
+      "@/src",
+      "@/proxy.test.ts",
+      "@/next.config.mjs",
+    ]) {
       expect(refusedUnlessExact.test(specifier), specifier).toBe(true);
+    }
+    // ESLint and the scanner agree on every @/ form above.
+    for (const specifier of ["@/proxy", "@/proxy.ts", "@/next.config", "@/src/boundary/denial", "@/app/[[...path]]/route", "@/tools/helper.mjs", "@/tests/support/raw-http", "@/eslint.config.mjs", "@/vitest.config.mts", "@/srcfile", "@/src", "@/proxy.test.ts", "@/next.config.mjs"]) {
+      expect(refusedUnlessExact.test(specifier), specifier).toBe(!isRuntimeAllowedSpecifier(specifier));
     }
   });
 
@@ -1188,8 +1342,18 @@ describe("ESLint mirror", () => {
     expect(ruleIds("runtime:s7-getbuiltinmodule-proxy.txt")).toEqual(["no-restricted-globals", "no-restricted-properties", "no-restricted-syntax"]);
     expect(ruleIds("runtime:s9-evalmanifest-proxy.txt")).toEqual(["no-restricted-imports"]);
     expect(ruleIds("runtime:s9-requirepage-proxy.txt")).toEqual(["no-restricted-imports"]);
-    expect(messagesOf("runtime:s9-evalmanifest-proxy.txt", "no-restricted-imports")).toEqual([expect.stringContaining("type-only next/server, type-only next and repository files")]);
+    expect(messagesOf("runtime:s9-evalmanifest-proxy.txt", "no-restricted-imports")).toEqual([expect.stringContaining("runtime repository files (@/app, @/src, @/proxy, @/next.config)")]);
+    // S11: the runtime set is closed under @/ in ESLint too.
+    expect(ruleIds("runtime:s11-tools-helper-proxy.txt")).toEqual(["no-restricted-imports"]);
+    expect(ruleIds("runtime:s11-tests-raw-http-proxy.txt")).toEqual(["no-restricted-imports"]);
+    expect(messagesOf("runtime:s11-tools-helper-proxy.txt", "no-restricted-imports")).toEqual([expect.stringContaining("tooling, tests and package internals are never imported")]);
     for (const name of [
+      "runtime-alias-eslint-config.txt",
+      "runtime-alias-vitest-config.txt",
+      "runtime-alias-tests.txt",
+      "runtime-alias-tools-policy.txt",
+      "runtime-alias-prefix-trick.txt",
+      "runtime-alias-bare-directory.txt",
       "runtime-node-builtin.txt",
       "runtime-dev-package.txt",
       "runtime-next-value-import.txt",
@@ -1203,6 +1367,10 @@ describe("ESLint mirror", () => {
     ]) {
       expect(ruleIds(`runtime:${name}`), name).toEqual(["no-restricted-imports"]);
     }
+    // S12: dynamic import() is refused in runtime source whatever the specifier.
+    expect(ruleIds("runtime:runtime-dynamic-import-next-dist.txt")).toEqual(["no-restricted-syntax"]);
+    expect(ruleIds("runtime:runtime-dynamic-import-alias.txt")).toEqual(["no-restricted-syntax"]);
+    expect(messagesOf("runtime:runtime-dynamic-import-alias.txt", "no-restricted-syntax")).toEqual([expect.stringContaining("no dynamic import()")]);
     expect(ruleIds("runtime:runtime-fetch.txt")).toEqual(["no-restricted-globals"]);
     expect(ruleIds("runtime:runtime-timer.txt")).toEqual(["no-restricted-globals"]);
     expect(ruleIds("runtime:runtime-globalthis.txt")).toEqual(["no-restricted-globals"]);
@@ -1211,8 +1379,18 @@ describe("ESLint mirror", () => {
     expect(ruleIds("runtime:computed-module-binding.txt")).toEqual(["no-restricted-imports", "no-restricted-syntax"]);
   });
 
+  it("looks through TypeScript wrappers around refused objects and refuses network builtins outside their allowances", () => {
+    expect(ruleIds("ts:satisfies-wrapped-process.txt")).toEqual(["no-restricted-syntax"]);
+    expect(messagesOf("ts:satisfies-wrapped-process.txt", "no-restricted-syntax")).toEqual([expect.stringContaining("TypeScript-wrapped")]);
+    expect(ruleIds("ts:asserted-wrapped-globalthis.txt")).toEqual(["@typescript-eslint/consistent-type-assertions", "@typescript-eslint/no-non-null-assertion", "no-restricted-syntax"]);
+    expect(messagesOf("ts:asserted-wrapped-globalthis.txt", "no-restricted-syntax")).toEqual([expect.stringContaining("TypeScript-wrapped")]);
+    expect(ruleIds("ts:net-loader.txt")).toEqual(["no-restricted-imports"]);
+    expect(ruleIds("ts:http-loader.txt")).toEqual(["no-restricted-imports"]);
+  });
+
   it("reports nothing for the clean controls", () => {
     expect(results["clean-module.txt"]).toEqual([]);
     expect(results["runtime:clean-runtime-types.txt"]).toEqual([]);
+    expect(results["runtime:clean-runtime-alias.txt"]).toEqual([]);
   });
 });

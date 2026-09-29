@@ -1,0 +1,8 @@
+// @ts-check
+import { ESLint } from "eslint";
+
+/** @param {string} configPath */
+export async function lintWith(configPath) {
+  const eslint = new ESLint({ overrideConfigFile: configPath });
+  return eslint.lintText("export const x = 1;\n", { filePath: "x.mjs" });
+}

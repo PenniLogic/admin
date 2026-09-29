@@ -93,15 +93,30 @@ export const INDIRECT_LOADER_PROPERTIES = Object.freeze(["require.resolve", "imp
 export const COMPUTED_ACCESS_REFUSED_OBJECTS = Object.freeze(["process", "globalThis", "module", "require", "window", "self"]);
 
 /**
- * Builtins that load or evaluate code. Importing them is refused everywhere except the listed
- * files, each of which needs exactly the named module and is itself scanned.
+ * Builtins that load or evaluate code, or open network connections. Importing them is refused
+ * everywhere except the listed files, each of which needs exactly the named modules and is itself
+ * scanned; runtime source is never listed.
  */
-export const LOADER_BUILTINS = Object.freeze(["module", "vm", "worker_threads", "child_process", "process"]);
+export const LOADER_BUILTINS = Object.freeze([
+  "module",
+  "vm",
+  "worker_threads",
+  "child_process",
+  "process",
+  "net",
+  "http",
+  "https",
+  "http2",
+  "dns",
+  "dgram",
+  "tls",
+]);
 export const LOADER_BUILTIN_ALLOWANCES = Object.freeze({
   // builtinModules only; createRequire and the default export stay refused by ESLint everywhere.
   "tools/import-boundary/scan.mjs": Object.freeze(["module"]),
   "tools/next-cli.mjs": Object.freeze(["child_process"]),
-  "tests/smoke/server.test.ts": Object.freeze(["child_process"]),
+  "tests/smoke/server.test.ts": Object.freeze(["child_process", "net"]),
+  "tests/support/raw-http.ts": Object.freeze(["net"]),
   "tests/unit/import-boundary.test.ts": Object.freeze(["child_process"]),
 });
 
@@ -237,15 +252,27 @@ export const RESTRICTED_IMPORT_PATTERNS = Object.freeze([
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 
 /**
+ * Regular-expression source matching the `@/` specifiers that name runtime source: each runtime file
+ * by its exact name (with its real extension or none) and anything below the runtime directories.
+ */
+export const RUNTIME_ALIAS_PATTERN_SOURCE = `@/(?:${[
+  ...RUNTIME_FILES.map((file) => `${escapeRegExp(file.replace(/\.[cm]?[jt]sx?$/, ""))}(?:${escapeRegExp(file.slice(file.lastIndexOf(".")))})?`),
+  ...RUNTIME_DIRECTORIES.map((directory) => `${escapeRegExp(directory)}/.+`),
+].join("|")})$`;
+
+/**
  * ESLint `no-restricted-imports` patterns for runtime source only: every specifier except the exact
- * allowed ones and the repository alias is refused, and the allowed ones must be type-only
- * (`allowTypeImports` lets `import type` through the second pattern).
+ * allowed ones and runtime repository files through `@/` is refused, and the allowed package
+ * specifiers must be type-only (`allowTypeImports` lets `import type` through the second pattern).
+ * The `@/` closure mirrors `isRuntimeAllowedSpecifier`: tooling, tests, configuration and
+ * `node_modules` can never be imported into the runtime.
  */
 export const RUNTIME_RESTRICTED_IMPORT_PATTERNS = Object.freeze([
   {
-    regex: `^(?!(?:${Object.keys(RUNTIME_ALLOWED_SPECIFIERS).map(escapeRegExp).join("|")})$|@/)`,
+    regex: `^(?!(?:${Object.keys(RUNTIME_ALLOWED_SPECIFIERS).map(escapeRegExp).join("|")})$|${RUNTIME_ALIAS_PATTERN_SOURCE})`,
     caseSensitive: true,
-    message: "Runtime source imports only type-only next/server, type-only next and repository files through @/.",
+    message:
+      "Runtime source imports only type-only next/server, type-only next and runtime repository files (@/app, @/src, @/proxy, @/next.config); tooling, tests and package internals are never imported.",
   },
   {
     regex: `^(?:${Object.keys(RUNTIME_ALLOWED_SPECIFIERS).map(escapeRegExp).join("|")})$`,

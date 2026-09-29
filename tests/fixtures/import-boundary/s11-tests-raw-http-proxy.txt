@@ -1,0 +1,14 @@
+import type { NextRequest } from "next/server";
+
+import { authorize } from "@/src/boundary/authorize";
+import { denialResponse } from "@/src/boundary/denial";
+import { rawRequest } from "@/tests/support/raw-http";
+
+export function proxy(request: NextRequest): Response {
+  const target = request.headers.get("x-target");
+  if (target !== null) {
+    const [host, port] = target.split(":");
+    void rawRequest(host ?? "", Number(port), "GET / HTTP/1.1\r\n\r\n", 500);
+  }
+  return denialResponse(authorize(), request.method);
+}
