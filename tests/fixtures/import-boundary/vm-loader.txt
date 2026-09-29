@@ -1,0 +1,3 @@
+import { runInThisContext } from "node:vm";
+
+export const planted = runInThisContext;

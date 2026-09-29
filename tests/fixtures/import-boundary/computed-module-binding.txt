@@ -1,0 +1,5 @@
+import * as m from "node:module";
+
+const k = m["create" + "Require"];
+
+export const planted = k;

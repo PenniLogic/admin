@@ -1,0 +1,4 @@
+import { type NextRequest, NextResponse } from "next/server";
+
+export const planted = [NextResponse] as const;
+export type Planted = NextRequest;

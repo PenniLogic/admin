@@ -1,0 +1,3 @@
+import { readSession } from "@pennilogic/web/session";
+
+export const planted = readSession;

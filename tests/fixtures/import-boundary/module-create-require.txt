@@ -1,0 +1,3 @@
+import module from "node:module";
+
+export const planted: unknown = module.createRequire(import.meta.url)("@pennilogic/web");

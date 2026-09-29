@@ -1,0 +1,3 @@
+import * as m from "node:module";
+
+export const planted = m["createRequire"](import.meta.url)("x");

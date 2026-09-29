@@ -1,0 +1,5 @@
+const id = "a";
+const obj = { a: 1 };
+const { [id]: v } = obj;
+
+export const planted = v;

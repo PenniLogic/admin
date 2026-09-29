@@ -1,0 +1,1 @@
+export const planted = (<Record<string, unknown>>globalThis!)["Func" + "tion"];

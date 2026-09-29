@@ -1,0 +1,1 @@
+export const planted: unknown = new Function("return require('@pennilogic/web')")();

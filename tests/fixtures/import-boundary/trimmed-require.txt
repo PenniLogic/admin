@@ -1,0 +1,3 @@
+const web = require("@pennilogic/web".trim());
+
+module.exports = web;

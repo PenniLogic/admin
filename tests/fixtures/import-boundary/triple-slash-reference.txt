@@ -1,0 +1,3 @@
+/// <reference path="../../web/src/session.d.ts" />
+
+export const planted = 1;

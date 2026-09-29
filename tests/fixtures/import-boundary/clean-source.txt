@@ -1,0 +1,13 @@
+import a from "next";
+import type { B } from "next/server";
+import "vitest";
+export { c } from "./c";
+export * from "../d";
+import { authorize } from "@/src/boundary/authorize";
+const e = await import("eslint");
+const f = require("node:fs");
+const h = await import(`vitest`);
+export const g = "not-an-import";
+export { a as GET, authorize as HEAD };
+export const planted = [a, e, f, h] as const;
+export type Planted = B;

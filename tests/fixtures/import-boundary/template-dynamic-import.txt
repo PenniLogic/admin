@@ -1,0 +1,5 @@
+const target = "web";
+
+export async function planted() {
+  return import(`@pennilogic/${target}`);
+}

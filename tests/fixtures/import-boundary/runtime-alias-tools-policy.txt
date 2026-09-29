@@ -1,0 +1,3 @@
+import { RULES } from "@/tools/import-boundary/policy.mjs";
+
+export const planted = RULES;

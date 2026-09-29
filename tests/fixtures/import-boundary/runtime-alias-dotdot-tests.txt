@@ -1,0 +1,3 @@
+import { rawRequest } from "@/app/../tests/support/raw-http";
+
+export const planted = rawRequest;

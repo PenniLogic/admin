@@ -1,0 +1,3 @@
+import module from "node:module";
+
+export const planted = module.require("x");

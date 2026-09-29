@@ -1,0 +1,3 @@
+import type { Session } from "@pennilogic/web/types";
+
+export type Planted = Session;

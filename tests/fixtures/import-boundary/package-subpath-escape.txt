@@ -1,0 +1,3 @@
+import { readSession } from "next/../../../web/src/session";
+
+export const planted = readSession;

@@ -1,0 +1,3 @@
+import { session } from "../../web/src/session";
+
+export const planted = session;

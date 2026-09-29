@@ -1,0 +1,3 @@
+import { client } from "some-undeclared-sdk";
+
+export const planted = client;

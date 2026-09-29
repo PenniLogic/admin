@@ -1,0 +1,3 @@
+const web = require("@penni" + "logic/web");
+
+module.exports = web;
