@@ -5,8 +5,10 @@
  *
  * Source is parsed with the TypeScript compiler, never matched with regular expressions, so every
  * static import, re-export, `import x = require()`, `import("x")` type, dynamic `import()` and
- * `require()` is seen exactly as the compiler sees it. Any dynamic argument that is not a single
- * string literal, and any identifier that could assemble a specifier at run time, is refused.
+ * `require()` is seen exactly as the compiler sees it. What is enforced is enumerated: literal-only
+ * dynamic specifiers, no reference to the listed loader names, no computed member access on the
+ * listed bindings, `require` only as a direct callee, and for runtime source a positive allowlist of
+ * imports plus no reference to any process, global, module-system, network or timer identifier.
  */
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { builtinModules } from "node:module";
@@ -16,15 +18,26 @@ import ts from "typescript";
 
 import {
   ABSOLUTE_OR_REMOTE_PATTERN,
+  COMPUTED_ACCESS_REFUSED_OBJECTS,
   CUSTOMER_CODE_PATTERN,
   EXACT_VERSION_PATTERN,
   INDIRECT_LOADER_IDENTIFIERS,
   INDIRECT_LOADER_PROPERTIES,
+  LOADER_BUILTIN_ALLOWANCES,
+  LOADER_BUILTINS,
   NEXT_CONFIG_ALLOWED_KEYS,
+  NEXT_CONFIG_FILE,
+  NEXT_CONFIG_SIBLINGS,
+  OBFUSCATED_SPECIFIER_PATTERN,
   organizationRuleFor,
+  PACKAGE_SUBPATH_ESCAPE_PATTERN,
   packageNameOf,
   REGISTRY_URL_PREFIX,
   RULES,
+  RUNTIME_ALLOWED_PACKAGES,
+  RUNTIME_DIRECTORIES,
+  RUNTIME_FILES,
+  RUNTIME_REFUSED_IDENTIFIERS,
   TSCONFIG_PINNED_PATHS,
   TSCONFIG_REFUSED_KEYS,
   TSCONFIG_REFUSED_OPTIONS,
@@ -34,7 +47,14 @@ import {
  * @typedef {{ rule: string, file: string, specifier: string, message: string, line?: number }} Violation
  * @typedef {{ root: string, declared: ReadonlySet<string> }} Context
  * @typedef {{ specifier: string, line: number }} Located
- * @typedef {{ specifiers: Located[], nonLiteral: Located[], loaders: Located[] }} ParsedImports
+ * @typedef {{
+ *   specifiers: Located[],
+ *   nonLiteral: Located[],
+ *   loaders: Located[],
+ *   computed: Located[],
+ *   loaderImports: Located[],
+ *   runtimeReferences: Located[],
+ * }} ParsedSource
  * @typedef {Record<string, string> | undefined} DependencyMap
  * @typedef {{
  *   dependencies?: DependencyMap,
@@ -97,52 +117,130 @@ function literalText(node) {
 }
 
 /**
- * @param {ts.Expression} callee
- * @returns {string | null} the refused property access, if this callee is one
+ * Text of a member name reached by dot or by a string-literal key; null for computed keys.
+ * @param {ts.PropertyAccessExpression | ts.ElementAccessExpression} node
+ * @returns {string | null}
  */
-function indirectLoaderProperty(callee) {
-  if (!ts.isPropertyAccessExpression(callee)) {
-    return null;
-  }
-  const object = callee.expression;
-  const objectText = ts.isIdentifier(object) ? object.text : ts.isMetaProperty(object) ? "import.meta" : null;
-  const access = objectText === null ? null : `${objectText}.${callee.name.text}`;
-  return access !== null && INDIRECT_LOADER_PROPERTIES.includes(access) ? access : null;
+function memberName(node) {
+  return ts.isPropertyAccessExpression(node) ? node.name.text : literalText(node.argumentExpression);
 }
 
 /**
- * Parses source text and collects every module specifier, every dynamic import or require whose
- * argument list is not exactly one string literal, and every indirect loader.
+ * Name of the object a member is read from, when it is a plain identifier or `import.meta`,
+ * looking through parentheses and non-null assertions.
+ * @param {ts.Expression} object
+ * @returns {string | null}
+ */
+function objectName(object) {
+  let inner = object;
+  while (ts.isParenthesizedExpression(inner) || ts.isNonNullExpression(inner) || ts.isAsExpression(inner) || ts.isTypeAssertionExpression(inner)) {
+    inner = inner.expression;
+  }
+  if (ts.isIdentifier(inner)) {
+    return inner.text;
+  }
+  return ts.isMetaProperty(inner) ? "import.meta" : null;
+}
+
+/**
+ * Builtin module name of a specifier, without the `node:` scheme, or null.
+ * @param {string} specifier
+ * @returns {string | null}
+ */
+function builtinNameOf(specifier) {
+  const bare = specifier.startsWith("node:") ? specifier.slice("node:".length) : specifier;
+  return BUILTINS.has(bare) ? bare : null;
+}
+
+/**
+ * Local names bound by an import declaration (default, namespace and named bindings).
+ * @param {ts.ImportDeclaration} declaration
+ * @returns {string[]}
+ */
+function importedBindingNames(declaration) {
+  const clause = declaration.importClause;
+  if (clause === undefined) {
+    return [];
+  }
+  const names = clause.name === undefined ? [] : [clause.name.text];
+  const bindings = clause.namedBindings;
+  if (bindings !== undefined) {
+    if (ts.isNamespaceImport(bindings)) {
+      names.push(bindings.name.text);
+    } else {
+      names.push(...bindings.elements.map((element) => element.name.text));
+    }
+  }
+  return names;
+}
+
+/**
+ * Whether a file belongs to the runtime source set of a repository root.
+ * @param {string} root absolute
+ * @param {string} file absolute
+ */
+export function isRuntimeFile(root, file) {
+  const relative = path.relative(root, file).split(path.sep).join("/");
+  return RUNTIME_FILES.includes(relative) || RUNTIME_DIRECTORIES.some((directory) => relative.startsWith(`${directory}/`));
+}
+
+/**
+ * Parses source text and collects module specifiers, dynamic imports or requires whose argument
+ * list is not exactly one string literal, indirect loaders, computed member accesses on refused
+ * bindings, loader-builtin imports, and (for runtime source) every reference to a refused identifier.
  * @param {string} source
  * @param {string} fileName decides the script kind (.ts, .tsx, .mjs, ...)
- * @returns {ParsedImports}
+ * @param {{ runtime?: boolean }} [options]
+ * @returns {ParsedSource}
  */
-export function parseImports(source, fileName) {
+export function parseSource(source, fileName, options = {}) {
+  const runtime = options.runtime === true;
   const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, scriptKindFor(fileName));
-  /** @type {ParsedImports} */
-  const parsed = { specifiers: [], nonLiteral: [], loaders: [] };
-  /** @param {number} position */
-  const lineAt = (position) => sourceFile.getLineAndCharacterOfPosition(position).line + 1;
+  /** @type {ParsedSource} */
+  const parsed = { specifiers: [], nonLiteral: [], loaders: [], computed: [], loaderImports: [], runtimeReferences: [] };
+  /** Local bindings that came from a loader builtin; computed access on them is refused. */
+  const loaderBindings = new Set(COMPUTED_ACCESS_REFUSED_OBJECTS);
   /** @param {ts.Node} node */
-  const textOf = (node) => node.getText(sourceFile);
-  /** @param {string} text @param {number} position */
-  const specifier = (text, position) => parsed.specifiers.push({ specifier: text, line: lineAt(position) });
-  /** @param {ts.Node} node */
-  const nonLiteral = (node) => parsed.nonLiteral.push({ specifier: textOf(node), line: lineAt(node.getStart(sourceFile)) });
-  /** @param {string} text @param {ts.Node} node */
-  const loader = (text, node) => parsed.loaders.push({ specifier: text, line: lineAt(node.getStart(sourceFile)) });
+  const lineOf = (node) => sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+  /** @param {Located[]} bucket @param {string} specifier @param {ts.Node} node */
+  const record = (bucket, specifier, node) => bucket.push({ specifier, line: lineOf(node) });
   /**
-   * Static declarations only ever carry string literals (the grammar rejects anything else), so a
-   * non-literal here is unreachable; the dynamic forms are classified in the call-expression branch.
+   * Static declarations only ever carry string literals (the grammar rejects anything else), so the
+   * fallback text is unreachable; dynamic forms are classified in the call-expression branch.
    * @param {ts.Node} literal
+   * @returns {string}
    */
-  const staticSpecifier = (literal) => specifier(literalText(literal) ?? textOf(literal), literal.getStart(sourceFile));
+  const staticText = (literal) => literalText(literal) ?? literal.getText(sourceFile);
+  /** @param {string} specifier @param {ts.Node} node */
+  const noteLoaderBuiltin = (specifier, node) => {
+    const builtin = builtinNameOf(specifier);
+    if (builtin !== null && LOADER_BUILTINS.includes(builtin)) {
+      record(parsed.loaderImports, builtin, node);
+    }
+  };
+  /** @param {ts.Node} literal */
+  const staticSpecifier = (literal) => {
+    const text = staticText(literal);
+    record(parsed.specifiers, text, literal);
+    noteLoaderBuiltin(text, literal);
+  };
 
   for (const reference of [...sourceFile.referencedFiles, ...sourceFile.typeReferenceDirectives]) {
-    specifier(reference.fileName, reference.pos);
+    parsed.specifiers.push({ specifier: reference.fileName, line: sourceFile.getLineAndCharacterOfPosition(reference.pos).line + 1 });
   }
   for (const dependency of sourceFile.amdDependencies) {
-    specifier(dependency.path, 0);
+    parsed.specifiers.push({ specifier: dependency.path, line: 1 });
+  }
+  // First pass: bindings introduced by loader-builtin imports, so later accesses can be judged.
+  for (const statement of sourceFile.statements) {
+    if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+      const builtin = builtinNameOf(statement.moduleSpecifier.text);
+      if (builtin !== null && LOADER_BUILTINS.includes(builtin)) {
+        for (const name of importedBindingNames(statement)) {
+          loaderBindings.add(name);
+        }
+      }
+    }
   }
 
   /** @param {ts.Node} node */
@@ -157,22 +255,49 @@ export function parseImports(source, fileName) {
       const callee = node.expression;
       const isDynamicImport = callee.kind === ts.SyntaxKind.ImportKeyword;
       const isRequire = ts.isIdentifier(callee) && callee.text === "require";
-      const property = indirectLoaderProperty(callee);
       if (isDynamicImport || isRequire) {
         const [argument] = node.arguments;
         const literal = node.arguments.length === 1 && argument !== undefined ? literalText(argument) : null;
         if (literal === null) {
-          nonLiteral(node);
+          record(parsed.nonLiteral, node.getText(sourceFile), node);
         } else {
-          specifier(literal, node.getStart(sourceFile));
+          record(parsed.specifiers, literal, node);
+          noteLoaderBuiltin(literal, node);
         }
-      } else if (property !== null) {
-        loader(property, node);
+        // The callee identifier is legitimate here; skip it and visit the arguments only.
+        for (const argumentNode of node.arguments) {
+          visit(argumentNode);
+        }
+        return;
+      }
+    } else if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
+      const object = objectName(node.expression);
+      const name = memberName(node);
+      if (name === null) {
+        const numeric = ts.isElementAccessExpression(node) && ts.isNumericLiteral(node.argumentExpression);
+        const refusedObject = object !== null && (loaderBindings.has(object) || object === "import.meta");
+        if (refusedObject || (runtime && !numeric)) {
+          record(parsed.computed, node.getText(sourceFile), node);
+        }
+      } else if (object !== null && INDIRECT_LOADER_PROPERTIES.includes(`${object}.${name}`)) {
+        record(parsed.loaders, `${object}.${name}`, node);
+      } else if (INDIRECT_LOADER_IDENTIFIERS.includes(name) || name === "require") {
+        record(parsed.loaders, name, node);
+      }
+      if (ts.isElementAccessExpression(node) && name !== null && runtime && RUNTIME_REFUSED_IDENTIFIERS.includes(name)) {
+        record(parsed.runtimeReferences, name, node);
       }
     } else if (ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "Function") {
-      loader("new Function", node);
-    } else if (ts.isIdentifier(node) && INDIRECT_LOADER_IDENTIFIERS.includes(node.text)) {
-      loader(node.text, node);
+      record(parsed.loaders, "new Function", node);
+    } else if (ts.isIdentifier(node)) {
+      if (INDIRECT_LOADER_IDENTIFIERS.includes(node.text) || node.text === "require") {
+        record(parsed.loaders, node.text, node);
+      }
+      if (runtime && RUNTIME_REFUSED_IDENTIFIERS.includes(node.text)) {
+        record(parsed.runtimeReferences, node.text, node);
+      }
+    } else if (ts.isMetaProperty(node) && runtime) {
+      record(parsed.runtimeReferences, "import.meta", node);
     }
     ts.forEachChild(node, visit);
   };
@@ -187,7 +312,7 @@ export function parseImports(source, fileName) {
  * @returns {string[]}
  */
 export function extractSpecifiers(source, fileName = "source.ts") {
-  return parseImports(source, fileName).specifiers.map((entry) => entry.specifier);
+  return parseSource(source, fileName).specifiers.map((entry) => entry.specifier);
 }
 
 /**
@@ -251,6 +376,9 @@ export function checkSpecifier(specifier, file, context) {
   if (ABSOLUTE_OR_REMOTE_PATTERN.test(specifier)) {
     return violation(RULES.absoluteOrRemote, "Absolute, URL, node_modules and subpath-import specifiers are refused.");
   }
+  if (OBFUSCATED_SPECIFIER_PATTERN.test(specifier)) {
+    return violation(RULES.escapesRepository, "Specifiers must not contain backslashes or percent-encoding.");
+  }
   if (CUSTOMER_CODE_PATTERN.test(specifier)) {
     return violation(RULES.customerCode, "Customer web code and shared client bundles are never imported.");
   }
@@ -266,8 +394,16 @@ export function checkSpecifier(specifier, file, context) {
       ? null
       : violation(RULES.escapesRepository, "Relative import resolves outside this repository's own files.");
   }
-  if (specifier.startsWith("node:") || BUILTINS.has(specifier)) {
+  if (specifier.startsWith("node:")) {
+    return BUILTINS.has(specifier.slice("node:".length))
+      ? null
+      : violation(RULES.undeclaredDependency, "Only real Node.js builtins may use the node: scheme.");
+  }
+  if (BUILTINS.has(specifier)) {
     return null;
+  }
+  if (PACKAGE_SUBPATH_ESCAPE_PATTERN.test(specifier)) {
+    return violation(RULES.escapesRepository, "Package subpaths must not contain dot segments.");
   }
   const name = packageNameOf(specifier);
   const organizationRule = organizationRuleFor(name);
@@ -281,7 +417,19 @@ export function checkSpecifier(specifier, file, context) {
 }
 
 /**
- * Checks every import of one source text.
+ * Checks a specifier against the runtime allowlist; only called for runtime source.
+ * @param {string} specifier
+ * @returns {boolean}
+ */
+export function isRuntimeAllowedSpecifier(specifier) {
+  if (specifier.startsWith("@/")) {
+    return true;
+  }
+  return RUNTIME_ALLOWED_PACKAGES.some((name) => specifier === name || specifier.startsWith(`${name}/`));
+}
+
+/**
+ * Checks every import and refused construct of one source text.
  * @param {string} source
  * @param {string} file absolute path the source is attributed to
  * @param {Context} context
@@ -291,30 +439,42 @@ export function checkSource(source, file, context) {
   /** @type {Violation[]} */
   const violations = [];
   const relativeFile = attributed(context.root, file);
-  const parsed = parseImports(source, file);
-  for (const { specifier, line } of parsed.specifiers) {
-    const found = checkSpecifier(specifier, file, context);
+  const runtime = isRuntimeFile(context.root, file);
+  const parsed = parseSource(source, file, { runtime });
+  /** @param {string} rule @param {Located} located @param {string} message */
+  const add = (rule, located, message) =>
+    violations.push({ rule, file: relativeFile, specifier: located.specifier, message, line: located.line });
+
+  for (const located of parsed.specifiers) {
+    const found = checkSpecifier(located.specifier, file, context);
     if (found) {
-      violations.push({ ...found, line });
+      violations.push({ ...found, line: located.line });
+    } else if (runtime && !isRuntimeAllowedSpecifier(located.specifier)) {
+      add(RULES.runtimeImport, located, "Runtime source imports only next, react, react-dom and repository files through @/.");
     }
   }
-  for (const { specifier, line } of parsed.nonLiteral) {
-    violations.push({
-      rule: RULES.nonLiteralSpecifier,
-      file: relativeFile,
-      specifier,
-      message: "Dynamic import and require arguments must be exactly one string literal.",
-      line,
-    });
+  for (const located of parsed.nonLiteral) {
+    add(RULES.nonLiteralSpecifier, located, "Dynamic import and require arguments must be exactly one string literal.");
   }
-  for (const { specifier, line } of parsed.loaders) {
-    violations.push({
-      rule: RULES.indirectLoader,
-      file: relativeFile,
-      specifier,
-      message: "Indirect module loaders and code evaluation are refused.",
-      line,
-    });
+  for (const located of parsed.loaders) {
+    add(RULES.indirectLoader, located, "Indirect module loaders, code evaluation and require outside a direct call are refused.");
+  }
+  for (const located of parsed.computed) {
+    add(RULES.computedAccess, located, "Computed member access is refused; members are named with identifiers or string literals.");
+  }
+  const posixFile = relativeFile.split(path.sep).join("/");
+  const allowedBuiltins = /** @type {ReadonlyArray<string>} */ (
+    Object.prototype.hasOwnProperty.call(LOADER_BUILTIN_ALLOWANCES, posixFile)
+      ? LOADER_BUILTIN_ALLOWANCES[/** @type {keyof typeof LOADER_BUILTIN_ALLOWANCES} */ (posixFile)]
+      : []
+  );
+  for (const located of parsed.loaderImports) {
+    if (!allowedBuiltins.includes(located.specifier)) {
+      add(RULES.indirectLoader, located, "Code-loading and process builtins are refused outside the files allowed in policy.mjs.");
+    }
+  }
+  for (const located of parsed.runtimeReferences) {
+    add(RULES.runtimeReference, located, "Runtime source references no process, global, module-system, network or timer identifier.");
   }
   return violations;
 }
@@ -462,12 +622,12 @@ export function checkTsconfig(tsconfig) {
 export function checkNextConfig(source) {
   /** @type {Violation[]} */
   const violations = [];
-  const sourceFile = ts.createSourceFile("next.config.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const sourceFile = ts.createSourceFile(NEXT_CONFIG_FILE, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   /** @param {ts.Node} node @param {string} specifier @param {string} message */
   const add = (node, specifier, message) =>
     violations.push({
       rule: RULES.resolutionSurface,
-      file: "next.config.ts",
+      file: NEXT_CONFIG_FILE,
       specifier,
       message,
       line: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
@@ -491,6 +651,36 @@ export function checkNextConfig(source) {
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
+  return violations;
+}
+
+/**
+ * Checks that exactly one Next.js configuration file exists and that it is the checked one; Next
+ * loads `next.config.js`/`.mjs` before `.ts`, so any sibling would replace the pinned configuration.
+ * @param {string} root absolute
+ * @returns {Violation[]}
+ */
+export function checkNextConfigFiles(root) {
+  /** @type {Violation[]} */
+  const violations = [];
+  if (!existsSync(path.join(root, NEXT_CONFIG_FILE))) {
+    violations.push({
+      rule: RULES.resolutionSurface,
+      file: NEXT_CONFIG_FILE,
+      specifier: NEXT_CONFIG_FILE,
+      message: "The pinned next.config.ts is required.",
+    });
+  }
+  for (const sibling of NEXT_CONFIG_SIBLINGS) {
+    if (existsSync(path.join(root, sibling))) {
+      violations.push({
+        rule: RULES.resolutionSurface,
+        file: sibling,
+        specifier: sibling,
+        message: "Only next.config.ts may exist; Next.js would load this file instead.",
+      });
+    }
+  }
   return violations;
 }
 
@@ -555,11 +745,12 @@ export function scanRepository(root) {
   const lockfile = /** @type {Lockfile} */ (readJson(path.join(absoluteRoot, "package-lock.json")));
   const context = { root: absoluteRoot, declared: declaredDependencies(manifest) };
   const walk = listSourceFiles(absoluteRoot);
-  const nextConfig = path.join(absoluteRoot, "next.config.ts");
+  const nextConfig = path.join(absoluteRoot, NEXT_CONFIG_FILE);
   const violations = [
     ...checkManifest(manifest),
     ...checkLockfile(lockfile, manifest),
     ...checkTsconfig(readTsconfig(path.join(absoluteRoot, "tsconfig.json"))),
+    ...checkNextConfigFiles(absoluteRoot),
     ...(existsSync(nextConfig) ? checkNextConfig(readFileSync(nextConfig, "utf8")) : []),
   ];
   for (const link of walk.links) {

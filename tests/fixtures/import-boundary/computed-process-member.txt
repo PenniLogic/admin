@@ -1,0 +1,3 @@
+const m = process["getBuiltin" + "Module"];
+
+export const planted = m;

@@ -17,12 +17,19 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import {
   ALLOWED_ORGANIZATION_PACKAGES,
+  LOADER_BUILTIN_ALLOWANCES,
   NEXT_CONFIG_ALLOWED_KEYS,
+  NEXT_CONFIG_SIBLINGS,
   organizationRuleFor,
   packageNameOf,
   RESTRICTED_IMPORT_PATHS,
   RESTRICTED_IMPORT_PATTERNS,
+  RESTRICTED_LOADER_BUILTIN_PATHS,
   RULES,
+  RUNTIME_ALLOWED_PACKAGES,
+  RUNTIME_REFUSED_IDENTIFIERS,
+  RUNTIME_RESTRICTED_GLOBALS,
+  RUNTIME_RESTRICTED_IMPORT_PATTERNS,
   TSCONFIG_PINNED_PATHS,
 } from "@/tools/import-boundary/policy.mjs";
 import {
@@ -30,14 +37,17 @@ import {
   checkLockfile,
   checkManifest,
   checkNextConfig,
+  checkNextConfigFiles,
   checkSource,
   checkSpecifier,
   checkTsconfig,
   declaredDependencies,
   extractSpecifiers,
   IGNORED_DIRECTORIES,
+  isRuntimeAllowedSpecifier,
+  isRuntimeFile,
   listSourceFiles,
-  parseImports,
+  parseSource,
   scanRepository,
   SOURCE_EXTENSIONS,
 } from "@/tools/import-boundary/scan.mjs";
@@ -47,6 +57,8 @@ const ROOT = path.resolve(fileURLToPath(import.meta.url), "../../..");
 const FIXTURES = path.join(ROOT, "tests", "fixtures", "import-boundary");
 const CHECK_CLI = path.join(ROOT, "tools", "import-boundary", "check.mjs");
 const COPIED_INTO_PLANTED_ROOTS = ["package.json", "package-lock.json", "tsconfig.json", "next.config.ts"];
+const RUNTIME_PLANT = path.join(ROOT, "src", "planted.ts");
+const TOOL_PLANT = path.join(ROOT, "tools", "planted.mjs");
 
 type Manifest = Parameters<typeof checkManifest>[0];
 type Lockfile = Parameters<typeof checkLockfile>[0];
@@ -59,7 +71,7 @@ const context = { root: ROOT, declared: declaredDependencies(manifest) };
 
 /**
  * Planted sources live in .txt fixtures, never inline in a scanned source file, and each names the
- * rule it must trip. The two clean controls must pass.
+ * rule it must trip when planted as a runtime file (src/planted.ts). The two clean controls must pass.
  */
 const PLANTED: Record<string, string> = {
   "customer-web-package.txt": RULES.organizationPackage,
@@ -81,20 +93,44 @@ const PLANTED: Record<string, string> = {
   "module-create-require.txt": RULES.indirectLoader,
   "eval-loader.txt": RULES.indirectLoader,
   "function-constructor.txt": RULES.indirectLoader,
+  "function-via-constructor.txt": RULES.indirectLoader,
   "require-resolve.txt": RULES.indirectLoader,
   "import-meta-resolve.txt": RULES.indirectLoader,
+  "aliased-require.txt": RULES.indirectLoader,
+  "module-require-member.txt": RULES.indirectLoader,
+  "require-main-require.txt": RULES.indirectLoader,
+  "literal-key-module-binding.txt": RULES.indirectLoader,
+  "vm-loader.txt": RULES.indirectLoader,
+  "worker-threads-loader.txt": RULES.indirectLoader,
+  "child-process-loader.txt": RULES.indirectLoader,
+  "s7-getbuiltinmodule-proxy.txt": RULES.indirectLoader,
+  "computed-process-member.txt": RULES.computedAccess,
+  "computed-module-binding.txt": RULES.computedAccess,
+  "computed-globalthis.txt": RULES.computedAccess,
+  "parenthesized-import-meta.txt": RULES.indirectLoader,
   "relative-escape.txt": RULES.escapesRepository,
   "deep-relative-escape.txt": RULES.escapesRepository,
   "alias-escape.txt": RULES.escapesRepository,
+  "alias-percent-encoded.txt": RULES.escapesRepository,
   "triple-slash-reference.txt": RULES.escapesRepository,
+  "package-subpath-escape.txt": RULES.escapesRepository,
+  "package-subpath-dot.txt": RULES.escapesRepository,
   "absolute-path.txt": RULES.absoluteOrRemote,
   "remote-url.txt": RULES.absoluteOrRemote,
   "subpath-import.txt": RULES.absoluteOrRemote,
   "undeclared-package.txt": RULES.undeclaredDependency,
+  "node-scheme-non-builtin.txt": RULES.undeclaredDependency,
+  "runtime-node-builtin.txt": RULES.runtimeImport,
+  "runtime-dev-package.txt": RULES.runtimeImport,
+  "runtime-fetch.txt": RULES.runtimeReference,
+  "runtime-timer.txt": RULES.runtimeReference,
+  "runtime-globalthis.txt": RULES.runtimeReference,
 };
 /** A comment inside the call does not hide a literal specifier; the package rule still applies. */
 const PLANTED_WITH_COMMENT = { "commented-dynamic-import.txt": RULES.organizationPackage };
 const CONTROLS = ["clean-source.txt", "clean-module.txt"];
+/** Fixtures that are clean everywhere except in runtime source, where the positive allowlist applies. */
+const RUNTIME_ONLY = ["runtime-node-builtin.txt", "runtime-dev-package.txt", "runtime-fetch.txt", "runtime-timer.txt", "runtime-globalthis.txt"];
 
 function fixture(name: string): string {
   return readFileSync(path.join(FIXTURES, name), "utf8");
@@ -160,6 +196,7 @@ describe("import boundary of the real repository", () => {
   it("pins the compiler, bundler and test-runner resolution surfaces", () => {
     expect(checkTsconfig(tsconfig)).toEqual([]);
     expect(checkNextConfig(nextConfigSource)).toEqual([]);
+    expect(checkNextConfigFiles(ROOT)).toEqual([]);
     expect(TSCONFIG_PINNED_PATHS).toEqual({ "@/*": ["./*"] });
     const alias = vitestConfig.resolve?.alias as readonly { find: RegExp | string; replacement: string }[] | undefined;
     expect(alias).toHaveLength(1);
@@ -167,6 +204,39 @@ describe("import boundary of the real repository", () => {
     expect(path.resolve(alias?.[0]?.replacement ?? "")).toBe(ROOT);
     expect(vitestConfig.resolve?.preserveSymlinks).toBeUndefined();
     expect(vitestConfig.server).toBeUndefined();
+  });
+
+  it("classifies the runtime source set and keeps it on the positive allowlist", () => {
+    for (const file of ["proxy.ts", "next.config.ts", "app/[[...path]]/route.ts", "src/boundary/denial.ts", "src/deep/x.tsx"]) {
+      expect(isRuntimeFile(ROOT, path.join(ROOT, file)), file).toBe(true);
+    }
+    for (const file of ["tools/next-cli.mjs", "tests/unit/proxy.test.ts", "eslint.config.mjs", "vitest.config.mts", "srcfile.ts", "apps/x.ts"]) {
+      expect(isRuntimeFile(ROOT, path.join(ROOT, file)), file).toBe(false);
+    }
+    expect(RUNTIME_ALLOWED_PACKAGES).toEqual(["next", "react", "react-dom"]);
+    for (const specifier of ["next", "next/server", "react", "react-dom/server", "@/proxy", "@/src/boundary/denial"]) {
+      expect(isRuntimeAllowedSpecifier(specifier), specifier).toBe(true);
+    }
+    for (const specifier of ["node:fs", "fs", "typescript", "nextjs", "react-dom-extra", "eslint", "./denial", "../boundary/authorize"]) {
+      expect(isRuntimeAllowedSpecifier(specifier), specifier).toBe(false);
+    }
+    const files = scanRepository(ROOT).files.filter((file) => isRuntimeFile(ROOT, path.join(ROOT, file)));
+    expect(files).toEqual([
+      path.join("app", "[[...path]]", "route.ts"),
+      "next.config.ts",
+      "proxy.ts",
+      path.join("src", "boundary", "authorize.ts"),
+      path.join("src", "boundary", "denial.ts"),
+    ]);
+    for (const file of files) {
+      const parsed = parseSource(readFileSync(path.join(ROOT, file), "utf8"), file, { runtime: true });
+      expect(parsed.runtimeReferences, file).toEqual([]);
+      expect(parsed.computed, file).toEqual([]);
+      expect(parsed.loaders, file).toEqual([]);
+      expect(parsed.nonLiteral, file).toEqual([]);
+      expect(parsed.specifiers.every((entry) => isRuntimeAllowedSpecifier(entry.specifier)), file).toBe(true);
+    }
+    expect(RUNTIME_REFUSED_IDENTIFIERS).toEqual(expect.arrayContaining(["process", "globalThis", "module", "require", "eval", "Function", "fetch", "setTimeout"]));
   });
 
   it("passes the command-line check", () => {
@@ -184,12 +254,13 @@ describe("planted forbidden imports", () => {
     expect(readdirSync(FIXTURES).sort()).toEqual(
       [...Object.keys(PLANTED), ...Object.keys(PLANTED_WITH_COMMENT), ...CONTROLS].sort(),
     );
+    expect(RUNTIME_ONLY.every((name) => name in PLANTED)).toBe(true);
   });
 
   it.each([...Object.entries(PLANTED), ...Object.entries(PLANTED_WITH_COMMENT)])(
-    "%s is refused by rule %s",
+    "%s is refused by rule %s when planted as runtime source",
     (name, rule) => {
-      const violations = checkSource(fixture(name), path.join(ROOT, "src", "planted.ts"), context);
+      const violations = checkSource(fixture(name), RUNTIME_PLANT, context);
       expect(violations.length).toBeGreaterThan(0);
       expect(violations.map((violation) => violation.rule)).toContain(rule);
       for (const violation of violations) {
@@ -201,8 +272,32 @@ describe("planted forbidden imports", () => {
     },
   );
 
+  it.each(Object.entries(PLANTED).filter(([name]) => !RUNTIME_ONLY.includes(name)))(
+    "%s is still refused (rule %s) when planted outside runtime source",
+    (name, rule) => {
+      const violations = checkSource(fixture(name), TOOL_PLANT, context);
+      expect(violations.map((violation) => violation.rule), name).toContain(rule);
+    },
+  );
+
+  it.each(RUNTIME_ONLY)("%s is accepted outside runtime source, where the allowlist does not apply", (name) => {
+    expect(checkSource(fixture(name), TOOL_PLANT, context)).toEqual([]);
+  });
+
   it.each(CONTROLS)("%s passes as a clean control", (name) => {
     expect(checkSource(fixture(name), path.join(ROOT, "tests", "unit", "control.ts"), context)).toEqual([]);
+  });
+
+  it("refuses the reproduced getBuiltinModule proxy on three independent rules", () => {
+    const rules = new Set(checkSource(fixture("s7-getbuiltinmodule-proxy.txt"), path.join(ROOT, "proxy.ts"), context).map((violation) => violation.rule));
+    expect(rules).toEqual(new Set([RULES.indirectLoader, RULES.computedAccess, RULES.runtimeReference]));
+    withPlantedRepository({ "proxy.ts": fixture("s7-getbuiltinmodule-proxy.txt") }, (root) => {
+      const run = spawnSync(process.execPath, [CHECK_CLI, "--root", root], { cwd: ROOT, encoding: "utf8" });
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain(`${RULES.indirectLoader}: proxy.ts:7 -> getBuiltinModule`);
+      expect(run.stderr).toContain(`${RULES.computedAccess}: proxy.ts:8 -> builtin["create" + "Require"]`);
+      expect(run.stderr).toContain(`${RULES.runtimeReference}: proxy.ts:7 -> process`);
+    });
   });
 
   it("fails a repository scan and the command-line check when planted as a real file", () => {
@@ -223,7 +318,7 @@ describe("planted forbidden imports", () => {
 
   it("fails when an evasion form is planted into an existing runtime file", () => {
     const denial = readFileSync(path.join(ROOT, "src", "boundary", "denial.ts"), "utf8");
-    for (const name of ["concatenated-dynamic-import.txt", "create-require.txt"]) {
+    for (const name of ["concatenated-dynamic-import.txt", "create-require.txt", "computed-process-member.txt", "package-subpath-escape.txt", "runtime-fetch.txt"]) {
       withPlantedRepository({ "src/boundary/denial.ts": `${denial}\n${fixture(name)}` }, (root) => {
         const rules = scanRepository(root).violations.map((violation) => violation.rule);
         expect(rules, name).toContain(PLANTED[name]);
@@ -237,8 +332,14 @@ describe("planted forbidden imports", () => {
     });
   });
 
-  it("stays inside the repository when the same hops do not reach the root", () => {
+  it("refuses relative imports in runtime source even when they stay inside the repository", () => {
     withPlantedRepository({ "app/(admin)/nested/page.tsx": fixture("relative-escape.txt") }, (root) => {
+      expect(scanRepository(root).violations.map((violation) => violation.rule)).toEqual([RULES.runtimeImport]);
+    });
+  });
+
+  it("accepts the same hops outside runtime source when they do not reach the root", () => {
+    withPlantedRepository({ "tools/(admin)/nested/page.tsx": fixture("relative-escape.txt") }, (root) => {
       expect(scanRepository(root).violations).toEqual([]);
     });
   });
@@ -309,47 +410,156 @@ describe("specifier rules", () => {
       "vitest",
     ]);
     expect(extractSpecifiers("")).toEqual([]);
-    const parsed = parseImports(fixture("clean-source.txt"), "clean.ts");
+    const parsed = parseSource(fixture("clean-source.txt"), "clean.ts");
     expect(parsed.nonLiteral).toEqual([]);
     expect(parsed.loaders).toEqual([]);
     expect(parsed.specifiers.map((entry) => entry.line)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
 
   it("reports every dynamic call that is not exactly one string literal, with its line", () => {
-    expect(parseImports(fixture("variable-require.txt"), "planted.ts").nonLiteral).toEqual([
+    expect(parseSource(fixture("variable-require.txt"), "planted.ts").nonLiteral).toEqual([
       { specifier: "require(name)", line: 2 },
     ]);
-    expect(parseImports(fixture("template-dynamic-import.txt"), "planted.ts").nonLiteral).toEqual([
+    expect(parseSource(fixture("template-dynamic-import.txt"), "planted.ts").nonLiteral).toEqual([
       { specifier: "import(`@pennilogic/${target}`)", line: 4 },
     ]);
-    expect(parseImports(fixture("concatenated-dynamic-import.txt"), "planted.ts").nonLiteral).toEqual([
+    expect(parseSource(fixture("concatenated-dynamic-import.txt"), "planted.ts").nonLiteral).toEqual([
       { specifier: 'import("@penni" + "logic/web/session")', line: 1 },
     ]);
-    expect(parseImports(fixture("two-argument-dynamic-import.txt"), "planted.ts").nonLiteral).toEqual([
+    expect(parseSource(fixture("two-argument-dynamic-import.txt"), "planted.ts").nonLiteral).toEqual([
       { specifier: 'import("@pennilogic/web", { with: { type: "json" } })', line: 1 },
     ]);
-    expect(parseImports(fixture("commented-dynamic-import.txt"), "planted.ts").specifiers).toEqual([
+    expect(parseSource(fixture("commented-dynamic-import.txt"), "planted.ts").specifiers).toEqual([
       { specifier: "@pennilogic/web", line: 1 },
     ]);
   });
 
   it("reports indirect loaders wherever they appear", () => {
-    expect(parseImports(fixture("create-require.txt"), "planted.ts").loaders.map((entry) => entry.specifier)).toEqual([
+    expect(parseSource(fixture("create-require.txt"), "planted.ts").loaders.map((entry) => entry.specifier)).toEqual([
       "createRequire",
       "createRequire",
     ]);
-    expect(parseImports(fixture("module-create-require.txt"), "planted.ts").loaders).toEqual([
+    expect(parseSource(fixture("module-create-require.txt"), "planted.ts").loaders).toEqual([
+      { specifier: "createRequire", line: 3 },
       { specifier: "createRequire", line: 3 },
     ]);
-    expect(parseImports(fixture("eval-loader.txt"), "planted.ts").loaders).toEqual([{ specifier: "eval", line: 1 }]);
-    expect(parseImports(fixture("function-constructor.txt"), "planted.ts").loaders.map((entry) => entry.specifier)).toEqual(
+    expect(parseSource(fixture("module-create-require.txt"), "planted.ts").loaderImports).toEqual([{ specifier: "module", line: 1 }]);
+    expect(parseSource(fixture("eval-loader.txt"), "planted.ts").loaders).toEqual([
+      { specifier: "eval", line: 1 },
+      { specifier: "eval", line: 1 },
+    ]);
+    expect(parseSource(fixture("function-constructor.txt"), "planted.ts").loaders.map((entry) => entry.specifier)).toEqual(
       ["new Function", "Function"],
     );
-    expect(parseImports(fixture("require-resolve.txt"), "planted.ts").loaders).toEqual([
-      { specifier: "require.resolve", line: 1 },
+    expect(parseSource(fixture("function-via-constructor.txt"), "planted.ts").loaders.map((entry) => entry.specifier)).toEqual([
+      "constructor",
+      "constructor",
     ]);
-    expect(parseImports(fixture("import-meta-resolve.txt"), "planted.ts").loaders).toEqual([
+    expect(parseSource(fixture("require-resolve.txt"), "planted.ts").loaders).toEqual([
+      { specifier: "require.resolve", line: 1 },
+      { specifier: "require", line: 1 },
+    ]);
+    expect(parseSource(fixture("import-meta-resolve.txt"), "planted.ts").loaders).toEqual([
       { specifier: "import.meta.resolve", line: 1 },
+    ]);
+    expect(parseSource(fixture("aliased-require.txt"), "planted.ts").loaders).toEqual([{ specifier: "require", line: 1 }]);
+    expect(parseSource(fixture("module-require-member.txt"), "planted.ts").loaders.map((entry) => entry.specifier)).toEqual([
+      "require",
+      "require",
+    ]);
+    expect(parseSource(fixture("module-require-member.txt"), "planted.ts").loaderImports.map((entry) => entry.specifier)).toEqual([
+      "module",
+    ]);
+    expect(parseSource(fixture("require-main-require.txt"), "planted.ts").loaders.map((entry) => entry.specifier)).toEqual([
+      "require",
+      "require",
+      "require",
+    ]);
+    expect(parseSource(fixture("literal-key-module-binding.txt"), "planted.ts").loaders.map((entry) => entry.specifier)).toEqual([
+      "createRequire",
+    ]);
+    expect(parseSource(fixture("literal-key-module-binding.txt"), "planted.ts").loaderImports.map((entry) => entry.specifier)).toEqual([
+      "module",
+    ]);
+    expect(parseSource(fixture("s7-getbuiltinmodule-proxy.txt"), "proxy.ts").loaders.map((entry) => entry.specifier)).toEqual([
+      "getBuiltinModule",
+      "getBuiltinModule",
+    ]);
+  });
+
+  it("records loader-builtin imports in every form and honours the per-file allowances", () => {
+    expect(parseSource(fixture("vm-loader.txt"), "planted.ts").loaderImports).toEqual([{ specifier: "vm", line: 1 }]);
+    expect(parseSource(fixture("worker-threads-loader.txt"), "planted.ts").loaderImports).toEqual([{ specifier: "worker_threads", line: 1 }]);
+    expect(parseSource('const cp = require("child_process");\n', "planted.cjs").loaderImports).toEqual([{ specifier: "child_process", line: 1 }]);
+    expect(parseSource('import cp = require("node:child_process");\n', "planted.cts").loaderImports).toEqual([{ specifier: "child_process", line: 1 }]);
+    expect(parseSource('export * from "node:process";\n', "planted.ts").loaderImports).toEqual([{ specifier: "process", line: 1 }]);
+    expect(parseSource('import { readFileSync } from "node:fs";\n', "planted.ts").loaderImports).toEqual([]);
+    expect(checkSource(fixture("child-process-loader.txt"), path.join(ROOT, "tools", "next-cli.mjs"), context)).toEqual([]);
+    expect(checkSource(fixture("child-process-loader.txt"), path.join(ROOT, "tools", "other.mjs"), context).map((violation) => violation.rule)).toEqual([
+      RULES.indirectLoader,
+    ]);
+    expect(checkSource(fixture("vm-loader.txt"), path.join(ROOT, "tools", "next-cli.mjs"), context).map((violation) => violation.rule)).toEqual([
+      RULES.indirectLoader,
+      RULES.indirectLoader,
+      RULES.indirectLoader,
+    ]);
+    expect(Object.keys(LOADER_BUILTIN_ALLOWANCES).sort()).toEqual([
+      "tests/smoke/server.test.ts",
+      "tests/unit/import-boundary.test.ts",
+      "tools/import-boundary/scan.mjs",
+      "tools/next-cli.mjs",
+    ]);
+  });
+
+  it("refuses computed member access on refused bindings everywhere and on anything in runtime source", () => {
+    expect(parseSource(fixture("computed-process-member.txt"), "planted.mjs").computed).toEqual([
+      { specifier: 'process["getBuiltin" + "Module"]', line: 1 },
+    ]);
+    expect(parseSource(fixture("computed-module-binding.txt"), "planted.mjs").computed).toEqual([
+      { specifier: 'm["create" + "Require"]', line: 3 },
+    ]);
+    // Default, named and side-effect imports of a loader builtin are tracked the same way.
+    expect(parseSource('import m from "node:module";\nconst k = m["create" + "Require"];\n', "planted.mjs").computed).toHaveLength(1);
+    expect(parseSource('import { builtinModules as b } from "module";\nconst k = b["len" + "gth"];\n', "planted.mjs").computed).toHaveLength(1);
+    expect(parseSource('import "node:module";\nconst o = {}; const k = "a"; const v = o[k];\n', "planted.mjs").computed).toEqual([]);
+    expect(parseSource(fixture("computed-globalthis.txt"), "planted.mjs").computed).toEqual([
+      { specifier: 'globalThis["Func" + "tion"]', line: 1 },
+    ]);
+    expect(parseSource(fixture("parenthesized-import-meta.txt"), "planted.mjs").loaders).toEqual([
+      { specifier: "import.meta.resolve", line: 1 },
+    ]);
+    expect(parseSource('export const planted = (import.meta)["res" + "olve"]("x");\n', "planted.mjs").computed).toEqual([
+      { specifier: '(import.meta)["res" + "olve"]', line: 1 },
+    ]);
+    expect(parseSource('const k = "x"; export const planted = (process as unknown as Record<string, unknown>)[k];\n', "planted.ts").computed).toHaveLength(1);
+    expect(parseSource('export const planted = process!["binding"];\n', "planted.ts").loaders.map((entry) => entry.specifier)).toEqual(["binding"]);
+    // Outside runtime source, computed access on ordinary objects stays acceptable.
+    expect(parseSource("const o = { a: 1 }; const k = 'a'; export const planted = o[k];\n", "planted.mjs").computed).toEqual([]);
+    expect(parseSource("export const planted = [1, 2][0];\n", "planted.mjs").computed).toEqual([]);
+    // Inside runtime source, only numeric and literal keys are acceptable.
+    expect(parseSource("const o = { a: 1 }; const k = 'a'; export const planted = o[k];\n", "planted.ts", { runtime: true }).computed).toHaveLength(1);
+    expect(parseSource("export const planted = [1, 2][0];\n", "planted.ts", { runtime: true }).computed).toEqual([]);
+    expect(parseSource('export const planted = { a: 1 }["a"];\n', "planted.ts", { runtime: true }).computed).toEqual([]);
+  });
+
+  it("records runtime references only for runtime source", () => {
+    const source = "export const planted = [globalThis, fetch, setTimeout, import.meta, process.env, window];\n";
+    expect(parseSource(source, "planted.ts").runtimeReferences).toEqual([]);
+    expect(parseSource(source, "planted.ts", { runtime: true }).runtimeReferences.map((entry) => entry.specifier)).toEqual([
+      "globalThis",
+      "fetch",
+      "setTimeout",
+      "import.meta",
+      "process",
+      "window",
+    ]);
+    expect(parseSource('export const planted = globalThis["fetch"];\n', "planted.ts", { runtime: true }).runtimeReferences.map((entry) => entry.specifier)).toEqual([
+      "fetch",
+      "globalThis",
+    ]);
+    expect(parseSource('export const planted = (x: { process: number }) => x.process;\n', "planted.ts", { runtime: true }).runtimeReferences.map((entry) => entry.specifier)).toEqual([
+      "process",
+      "process",
     ]);
   });
 
@@ -376,21 +586,25 @@ describe("specifier rules", () => {
     ]);
   });
 
-  it("accepts builtins, declared packages and their subpaths, and in-repository paths", () => {
+  it("accepts builtins, declared packages and their plain subpaths, and in-repository paths", () => {
     const accepted = [
       "node:fs",
       "fs",
       "path",
+      "node:module",
       "next",
       "next/server",
+      "next/dist/server/web/spec-extension/request",
       "vitest/config",
       "@eslint/js",
       "typescript",
+      "typescript/lib/typescript.js",
       "./denial",
       "../boundary/authorize",
       "../../tests/support/denial",
       "@/proxy",
       "@/app/[[...path]]/route",
+      "@/tests/fixtures/import-boundary/clean-source.txt",
     ];
     for (const specifier of accepted) {
       expect(checkSpecifier(specifier, file, context), specifier).toBeNull();
@@ -421,6 +635,16 @@ describe("specifier rules", () => {
       ["data:text/javascript,export default 1", RULES.absoluteOrRemote],
       ["node_modules/next/server", RULES.absoluteOrRemote],
       ["#customer/session", RULES.absoluteOrRemote],
+      ["next/../../../web/src/session", RULES.escapesRepository],
+      ["next/./dist/server", RULES.escapesRepository],
+      ["@types/node/../../web/session", RULES.escapesRepository],
+      ["typescript/lib/..", RULES.escapesRepository],
+      ["next\\dist\\server", RULES.escapesRepository],
+      ["next/%2e%2e/web", RULES.escapesRepository],
+      ["@/%2e%2e/web/session", RULES.escapesRepository],
+      ["./%2e%2e/web", RULES.escapesRepository],
+      ["node:../../web/session", RULES.undeclaredDependency],
+      ["node:not-a-builtin", RULES.undeclaredDependency],
       ["undeclared-sdk", RULES.undeclaredDependency],
       ["@scope/undeclared", RULES.undeclaredDependency],
     ];
@@ -607,7 +831,30 @@ describe("resolution surfaces", () => {
     try {
       rmSync(path.join(root, "tsconfig.json"));
       rmSync(path.join(root, "next.config.ts"));
-      expect(scanRepository(root).violations.map((violation) => violation.specifier)).toEqual(["tsconfig.json"]);
+      expect(scanRepository(root).violations.map((violation) => violation.specifier)).toEqual(["tsconfig.json", "next.config.ts"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses any Next.js configuration sibling that the framework would load before next.config.ts", () => {
+    expect(NEXT_CONFIG_SIBLINGS).toEqual(["next.config.js", "next.config.mjs", "next.config.cjs", "next.config.mts", "next.config.cts", "next.config.json"]);
+    const planted = 'const nextConfig = { basePath: "/planted", poweredByHeader: true };\nexport default nextConfig;\n';
+    for (const sibling of NEXT_CONFIG_SIBLINGS) {
+      withPlantedRepository({ [sibling]: planted }, (root) => {
+        const violations = scanRepository(root).violations;
+        expect(violations.map((violation) => [violation.rule, violation.file]), sibling).toContainEqual([RULES.resolutionSurface, sibling]);
+        const run = spawnSync(process.execPath, [CHECK_CLI, "--root", root], { cwd: ROOT, encoding: "utf8" });
+        expect(run.status, sibling).toBe(1);
+        expect(run.stderr, sibling).toContain(`${RULES.resolutionSurface}: ${sibling} -> ${sibling} (Only next.config.ts may exist`);
+      });
+    }
+    const root = plantedRepository({});
+    try {
+      rmSync(path.join(root, "next.config.ts"));
+      expect(checkNextConfigFiles(root)).toEqual([
+        { rule: RULES.resolutionSurface, file: "next.config.ts", specifier: "next.config.ts", message: "The pinned next.config.ts is required." },
+      ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -649,7 +896,8 @@ describe("source discovery", () => {
 });
 
 describe("ESLint mirror", () => {
-  const configFiles = ["src/planted.ts", "app/planted/page.tsx", "proxy.ts", "tools/planted.mjs"];
+  const configFiles = ["src/planted.ts", "app/planted/page.tsx", "proxy.ts", "next.config.ts", "tools/planted.mjs", "tests/unit/planted.test.ts", "tools/next-cli.mjs"];
+  const runtimeConfigFiles = ["src/planted.ts", "app/planted/page.tsx", "proxy.ts", "next.config.ts"];
   const linted = [
     "customer-web-package.txt",
     "shared-client-bundle.txt",
@@ -658,12 +906,34 @@ describe("ESLint mirror", () => {
     "remote-url.txt",
     "absolute-path.txt",
     "subpath-import.txt",
+    "package-subpath-escape.txt",
+    "package-subpath-dot.txt",
+    "alias-percent-encoded.txt",
     "create-require.txt",
     "eval-loader.txt",
     "function-constructor.txt",
+    "function-via-constructor.txt",
     "require-resolve.txt",
     "import-meta-resolve.txt",
+    "aliased-require.txt",
+    "module-require-member.txt",
+    "require-main-require.txt",
+    "computed-process-member.txt",
+    "computed-globalthis.txt",
+    "parenthesized-import-meta.txt",
+    "vm-loader.txt",
+    "worker-threads-loader.txt",
+    "child-process-loader.txt",
     "clean-module.txt",
+  ];
+  const lintedAsRuntime = [
+    "s7-getbuiltinmodule-proxy.txt",
+    "runtime-node-builtin.txt",
+    "runtime-dev-package.txt",
+    "runtime-fetch.txt",
+    "runtime-timer.txt",
+    "runtime-globalthis.txt",
+    "computed-module-binding.txt",
   ];
   interface Message {
     ruleId: string | null;
@@ -681,33 +951,58 @@ describe("ESLint mirror", () => {
       maxBuffer: 16 * 1024 * 1024,
       input: JSON.stringify({
         configFiles,
-        lint: linted.map((name) => ({ name, filePath: "tools/planted.mjs", source: fixture(name) })),
+        lint: [
+          ...linted.map((name) => ({ name, filePath: "tools/planted.mjs", source: fixture(name) })),
+          ...lintedAsRuntime.map((name) => ({ name: `runtime:${name}`, filePath: "src/planted.ts", source: fixture(name) })),
+        ],
       }),
     });
     expect(run.stderr).toBe("");
     expect(run.status).toBe(0);
     ({ configs, results } = JSON.parse(run.stdout) as { configs: typeof configs; results: typeof results });
-  });
+  }, 120_000);
 
-  function messagesOf(name: string, ruleIds: string[]): string[] {
+  function ruleIds(name: string): string[] {
     const messages = results[name] ?? [];
-    expect(messages.filter((message) => message.fatal)).toEqual([]);
-    const matching = messages.filter((message) => message.ruleId !== null && ruleIds.includes(message.ruleId));
-    expect(matching.every((message) => message.severity === 2)).toBe(true);
-    return matching.map((message) => `${String(message.ruleId)}: ${message.message}`);
+    expect(messages.filter((message) => message.fatal), name).toEqual([]);
+    expect(messages.every((message) => message.severity === 2), name).toBe(true);
+    return [...new Set(messages.map((message) => message.ruleId ?? "fatal"))].sort();
   }
 
-  it("configures no-restricted-imports as an error for TypeScript, TSX and module JavaScript files", () => {
-    for (const file of configFiles) {
-      expect(configs[file], file).toEqual([
-        2,
-        { patterns: [...RESTRICTED_IMPORT_PATTERNS], paths: [...RESTRICTED_IMPORT_PATHS] },
-      ]);
+  function messagesOf(name: string, ruleId: string): string[] {
+    return (results[name] ?? []).filter((message) => message.ruleId === ruleId).map((message) => message.message);
+  }
+
+  it("configures no-restricted-imports as an error everywhere, with the loader builtins refused outside the allowances", () => {
+    for (const file of configFiles.filter((name) => !runtimeConfigFiles.includes(name))) {
+      const expectedPaths = file in LOADER_BUILTIN_ALLOWANCES ? [...RESTRICTED_IMPORT_PATHS] : [...RESTRICTED_IMPORT_PATHS, ...RESTRICTED_LOADER_BUILTIN_PATHS];
+      expect(configs[file], file).toEqual([2, { patterns: [...RESTRICTED_IMPORT_PATTERNS], paths: expectedPaths }]);
     }
   });
 
-  it("reports planted organization, customer, prefixed, remote and subpath static imports", () => {
-    const rule = ["no-restricted-imports"];
+  it("adds the positive import allowlist and the restricted globals for runtime source", () => {
+    for (const file of runtimeConfigFiles) {
+      expect(configs[file], file).toEqual([
+        2,
+        {
+          patterns: [...RESTRICTED_IMPORT_PATTERNS, ...RUNTIME_RESTRICTED_IMPORT_PATTERNS],
+          paths: [...RESTRICTED_IMPORT_PATHS, ...RESTRICTED_LOADER_BUILTIN_PATHS],
+        },
+      ]);
+    }
+    expect(RUNTIME_RESTRICTED_GLOBALS.map((entry) => entry.name)).toEqual([...RUNTIME_REFUSED_IDENTIFIERS]);
+    expect(RUNTIME_RESTRICTED_IMPORT_PATTERNS[0]?.regex).toBe("^(?!(?:next|react|react-dom)(?:/|$)|@/)");
+    const allowlist = new RegExp(RUNTIME_RESTRICTED_IMPORT_PATTERNS[0]?.regex ?? "");
+    for (const specifier of ["next", "next/server", "react", "react-dom/server", "@/proxy"]) {
+      expect(allowlist.test(specifier), specifier).toBe(false);
+    }
+    for (const specifier of ["node:fs", "typescript", "nextjs", "react-dom-extra", "./x", "../x"]) {
+      expect(allowlist.test(specifier), specifier).toBe(true);
+    }
+  });
+
+  it("reports planted organization, customer, prefixed, remote, subpath and dot-segment static imports", () => {
+    const rule = "no-restricted-imports";
     expect(messagesOf("customer-web-package.txt", rule)).toEqual([expect.stringContaining("PenniLogic packages are refused")]);
     expect(messagesOf("shared-client-bundle.txt", rule)).toEqual([
       expect.stringContaining("Customer web code and shared client bundles"),
@@ -718,14 +1013,40 @@ describe("ESLint mirror", () => {
     expect(messagesOf("remote-url.txt", rule)).toEqual([expect.stringContaining("Import only repository files")]);
     expect(messagesOf("absolute-path.txt", rule)).toEqual([expect.stringContaining("Import only repository files")]);
     expect(messagesOf("subpath-import.txt", rule)).toEqual([expect.stringContaining("Import only repository files")]);
+    expect(messagesOf("package-subpath-escape.txt", rule)).toEqual([expect.stringContaining("dot segments")]);
+    expect(messagesOf("package-subpath-dot.txt", rule)).toEqual([expect.stringContaining("dot segments")]);
+    expect(messagesOf("alias-percent-encoded.txt", rule)).toEqual([
+      expect.stringContaining("dot segments"),
+      expect.stringContaining("percent-encoding"),
+    ]);
   });
 
-  it("reports the indirect loaders it can see statically", () => {
-    expect(messagesOf("create-require.txt", ["no-restricted-imports"])).toEqual([expect.stringContaining("createRequire assembles specifiers")]);
-    expect(messagesOf("eval-loader.txt", ["no-eval"])).toEqual([expect.stringContaining("eval")]);
-    expect(messagesOf("function-constructor.txt", ["no-new-func"])).toEqual([expect.stringContaining("Function constructor")]);
-    expect(messagesOf("require-resolve.txt", ["no-restricted-properties"])).toEqual([expect.stringContaining("never resolved at run time")]);
-    expect(messagesOf("import-meta-resolve.txt", ["no-restricted-syntax"])).toEqual([expect.stringContaining("import.meta.resolve")]);
+  it("reports every indirect loader and computed access form it can see statically", () => {
+    expect(ruleIds("create-require.txt")).toEqual(["no-restricted-imports"]);
+    expect(ruleIds("eval-loader.txt")).toEqual(["no-eval"]);
+    expect(ruleIds("function-constructor.txt")).toEqual(["no-new-func"]);
+    expect(ruleIds("function-via-constructor.txt")).toEqual(["no-restricted-syntax"]);
+    expect(ruleIds("require-resolve.txt")).toEqual(["no-restricted-properties", "no-restricted-syntax"]);
+    expect(ruleIds("import-meta-resolve.txt")).toEqual(["no-restricted-syntax"]);
+    expect(ruleIds("aliased-require.txt")).toEqual(["no-restricted-syntax"]);
+    expect(ruleIds("module-require-member.txt")).toEqual(["no-restricted-imports", "no-restricted-syntax"]);
+    expect(ruleIds("require-main-require.txt")).toEqual(["no-restricted-syntax"]);
+    expect(ruleIds("computed-process-member.txt")).toEqual(["no-restricted-syntax"]);
+    expect(ruleIds("computed-globalthis.txt")).toEqual(["no-restricted-syntax"]);
+    expect(ruleIds("parenthesized-import-meta.txt")).toEqual(["no-restricted-syntax"]);
+    expect(ruleIds("vm-loader.txt")).toEqual(["no-restricted-imports"]);
+    expect(ruleIds("worker-threads-loader.txt")).toEqual(["no-restricted-imports"]);
+    expect(ruleIds("child-process-loader.txt")).toEqual(["no-restricted-imports"]);
+  });
+
+  it("fails the reproduced getBuiltinModule proxy and every runtime-only fixture under the runtime rules", () => {
+    expect(ruleIds("runtime:s7-getbuiltinmodule-proxy.txt")).toEqual(["no-restricted-globals", "no-restricted-properties", "no-restricted-syntax"]);
+    expect(ruleIds("runtime:runtime-node-builtin.txt")).toEqual(["no-restricted-imports"]);
+    expect(ruleIds("runtime:runtime-dev-package.txt")).toEqual(["no-restricted-imports"]);
+    expect(ruleIds("runtime:runtime-fetch.txt")).toEqual(["no-restricted-globals"]);
+    expect(ruleIds("runtime:runtime-timer.txt")).toEqual(["no-restricted-globals"]);
+    expect(ruleIds("runtime:runtime-globalthis.txt")).toEqual(["no-restricted-globals"]);
+    expect(ruleIds("runtime:computed-module-binding.txt")).toEqual(["no-restricted-imports", "no-restricted-syntax"]);
   });
 
   it("reports nothing for the clean module control", () => {

@@ -68,7 +68,7 @@ function runtimeFiles(): string[] {
 }
 
 describe("no customer artifacts", () => {
-  it("scans the runtime files it expects", () => {
+  it("scans the runtime files it expects and no Next.js configuration sibling exists", () => {
     expect(runtimeFiles()).toEqual([
       path.join("app", "[[...path]]", "route.ts"),
       "next.config.ts",
@@ -76,19 +76,23 @@ describe("no customer artifacts", () => {
       path.join("src", "boundary", "authorize.ts"),
       path.join("src", "boundary", "denial.ts"),
     ]);
+    const rootFiles = readdirSync(ROOT);
+    expect(rootFiles.filter((name) => name.startsWith("next.config."))).toEqual(["next.config.ts"]);
+    expect(rootFiles.filter((name) => /^(middleware|proxy|instrumentation)\./.test(name))).toEqual(["proxy.ts"]);
   });
 
-  it("keeps cookies, sessions, storage, environment, loaders and network locations out of runtime source", () => {
+  it("keeps cookies, sessions, storage, environment, loaders, process and network locations out of runtime source", () => {
     for (const file of runtimeFiles()) {
       const source = read(file);
       expect(source, file).not.toMatch(/cookie/i);
       expect(source, file).not.toMatch(/session/i);
       expect(source, file).not.toMatch(/localStorage|sessionStorage|indexedDB/);
-      expect(source, file).not.toMatch(/process\.env/);
+      expect(source, file).not.toMatch(/\bprocess\b|\bglobalThis\b|\bmodule\b|\brequire\b|\bimport\.meta\b/);
       expect(source, file).not.toMatch(/https?:\/\//i);
       expect(source, file).not.toMatch(/\bfetch\s*\(/);
       expect(source, file).not.toMatch(/bearer|jwt|oauth|oidc|saml|["']authorization["']/i);
-      expect(source, file).not.toMatch(/createRequire|\beval\b|new Function|require\s*\(|import\s*\(/);
+      expect(source, file).not.toMatch(/createRequire|getBuiltinModule|\beval\b|new Function|require\s*\(|import\s*\(/);
+      expect(source, file).not.toMatch(/node:(?:vm|worker_threads|child_process|module|process|fs|net|http|https|dgram|tls|os|repl|inspector)\b/);
       expect(source.match(HOSTNAME) ?? [], file).toEqual([]);
     }
   });

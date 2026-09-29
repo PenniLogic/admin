@@ -19,6 +19,9 @@ export const RULES = Object.freeze({
   absoluteOrRemote: "absolute-or-remote-specifier",
   nonLiteralSpecifier: "non-literal-dynamic-specifier",
   indirectLoader: "indirect-module-loader",
+  computedAccess: "computed-member-access",
+  runtimeImport: "runtime-import-not-allowed",
+  runtimeReference: "runtime-reference-not-allowed",
   undeclaredDependency: "undeclared-dependency",
   nonRegistryDependency: "non-registry-or-inexact-dependency",
   workspaceOrBundle: "workspace-or-bundled-dependency",
@@ -48,13 +51,113 @@ export const ORGANIZATION_PACKAGE_PATTERN = /^(?:@pennilogic\/|pennilogic-)/i;
 export const ABSOLUTE_OR_REMOTE_PATTERN = /^(?:\/|\\|[A-Za-z]:[\\/]|file:|https?:|data:|node_modules\/|#)/i;
 
 /**
- * Identifiers that load or evaluate code outside the static import graph. Their presence anywhere
- * in scanned source is refused, so a specifier can never be assembled at run time.
+ * A bare package specifier whose subpath contains a dot segment, a backslash or percent-encoding.
+ * Packages without an `exports` map resolve such subpaths on the filesystem, so `next/../../x`
+ * leaves the package and the repository.
  */
-export const INDIRECT_LOADER_IDENTIFIERS = Object.freeze(["createRequire", "eval", "Function"]);
+export const PACKAGE_SUBPATH_ESCAPE_PATTERN = /^(?:@[^/]+\/)?[^./\\%][^/\\%]*\/(?:.*\/)?(?:\.\.?(?:\/|$)|.*[\\%])/;
+
+/** Any specifier that carries a backslash or percent-encoding, in any position. */
+export const OBFUSCATED_SPECIFIER_PATTERN = /[\\%]/;
+
+/**
+ * Identifiers that load or evaluate code outside the static import graph. Any reference anywhere in
+ * scanned source is refused: as an identifier, a property name or a string-literal element key.
+ */
+export const INDIRECT_LOADER_IDENTIFIERS = Object.freeze([
+  "createRequire",
+  "eval",
+  "Function",
+  "constructor",
+  "getBuiltinModule",
+  "binding",
+  "dlopen",
+  "mainModule",
+  "_load",
+  "runInThisContext",
+  "runInNewContext",
+  "runInContext",
+  "compileFunction",
+]);
 
 /** Property accesses that resolve specifiers at run time. */
 export const INDIRECT_LOADER_PROPERTIES = Object.freeze(["require.resolve", "import.meta.resolve"]);
+
+/**
+ * Bindings whose members must never be reached through a computed key: a non-literal element access
+ * on any of them (`process["getBuiltin" + "Module"]`) could name a loader the identifier rule cannot see.
+ * Namespace and default bindings imported from the loader builtins below join this set per file.
+ */
+export const COMPUTED_ACCESS_REFUSED_OBJECTS = Object.freeze(["process", "globalThis", "module", "require", "window", "self"]);
+
+/**
+ * Builtins that load or evaluate code. Importing them is refused everywhere except the listed
+ * files, each of which needs exactly the named module and is itself scanned.
+ */
+export const LOADER_BUILTINS = Object.freeze(["module", "vm", "worker_threads", "child_process", "process"]);
+export const LOADER_BUILTIN_ALLOWANCES = Object.freeze({
+  // builtinModules only; createRequire and the default export stay refused by ESLint everywhere.
+  "tools/import-boundary/scan.mjs": Object.freeze(["module"]),
+  "tools/next-cli.mjs": Object.freeze(["child_process"]),
+  "tests/smoke/server.test.ts": Object.freeze(["child_process"]),
+  "tests/unit/import-boundary.test.ts": Object.freeze(["child_process"]),
+});
+
+/**
+ * Positive allowlist for runtime source (`proxy.ts`, `app/**`, `src/**`, `next.config.ts`): the
+ * deny-only runtime imports only these packages (any subpath) and repository files through `@/`.
+ */
+export const RUNTIME_ALLOWED_PACKAGES = Object.freeze(["next", "react", "react-dom"]);
+
+/**
+ * Identifiers runtime source must not reference at all. The deny-only runtime needs no process,
+ * global, module-system or builtin access; this is structural, not a blocklist of loader names.
+ */
+export const RUNTIME_REFUSED_IDENTIFIERS = Object.freeze([
+  "process",
+  "globalThis",
+  "global",
+  "window",
+  "self",
+  "module",
+  "exports",
+  "require",
+  "eval",
+  "Function",
+  "Reflect",
+  "Proxy",
+  "WebAssembly",
+  "fetch",
+  "XMLHttpRequest",
+  "WebSocket",
+  "EventSource",
+  "Worker",
+  "SharedWorker",
+  "importScripts",
+  "setTimeout",
+  "setInterval",
+  "setImmediate",
+  "queueMicrotask",
+  "structuredClone",
+  "AsyncFunction",
+  "GeneratorFunction",
+  "AsyncGeneratorFunction",
+]);
+
+/** Directories and files that make up the runtime source set. */
+export const RUNTIME_DIRECTORIES = Object.freeze(["app", "src"]);
+export const RUNTIME_FILES = Object.freeze(["proxy.ts", "next.config.ts"]);
+
+/** The one configuration file Next.js may find; any sibling would be loaded before it. */
+export const NEXT_CONFIG_FILE = "next.config.ts";
+export const NEXT_CONFIG_SIBLINGS = Object.freeze([
+  "next.config.js",
+  "next.config.mjs",
+  "next.config.cjs",
+  "next.config.mts",
+  "next.config.cts",
+  "next.config.json",
+]);
 
 /**
  * The only path mapping the compiler, the bundler and the test runner may share. Anything else
@@ -109,14 +212,51 @@ export const RESTRICTED_IMPORT_PATTERNS = Object.freeze([
     caseSensitive: false,
     message: "Import only repository files, Node.js builtins and declared registry packages.",
   },
+  {
+    regex: PACKAGE_SUBPATH_ESCAPE_PATTERN.source,
+    caseSensitive: false,
+    message: "Package subpaths must not contain dot segments, backslashes or percent-encoding.",
+  },
+  {
+    regex: OBFUSCATED_SPECIFIER_PATTERN.source,
+    caseSensitive: false,
+    message: "Specifiers must not contain backslashes or percent-encoding.",
+  },
+]);
+
+/**
+ * ESLint `no-restricted-imports` patterns for runtime source only: everything except the allowed
+ * runtime packages (any subpath) and the repository alias is refused.
+ */
+export const RUNTIME_RESTRICTED_IMPORT_PATTERNS = Object.freeze([
+  {
+    regex: `^(?!(?:${RUNTIME_ALLOWED_PACKAGES.map((name) => name.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")).join("|")})(?:/|$)|@/)`,
+    caseSensitive: true,
+    message: "Runtime source imports only next, react, react-dom and repository files through @/.",
+  },
 ]);
 
 /** ESLint `no-restricted-imports` paths mirroring the indirect-loader rule for the module builtin. */
 export const RESTRICTED_IMPORT_PATHS = Object.freeze(
   ["node:module", "module"].map((name) => ({
     name,
-    importNames: ["createRequire"],
-    message: "createRequire assembles specifiers at run time and is refused by the admin import boundary.",
+    importNames: ["createRequire", "default"],
+    message: "The module builtin assembles specifiers at run time and is refused by the admin import boundary.",
+  })),
+);
+
+/** ESLint `no-restricted-imports` paths for every file without an allowance in LOADER_BUILTIN_ALLOWANCES. */
+export const RESTRICTED_LOADER_BUILTIN_PATHS = Object.freeze(
+  LOADER_BUILTINS.filter((name) => name !== "module")
+    .flatMap((name) => [name, `node:${name}`])
+    .map((name) => ({ name, message: "Code-loading and process builtins are refused outside the files allowed in policy.mjs." })),
+);
+
+/** ESLint `no-restricted-globals` entries mirroring the runtime-reference rule. */
+export const RUNTIME_RESTRICTED_GLOBALS = Object.freeze(
+  RUNTIME_REFUSED_IDENTIFIERS.map((name) => ({
+    name,
+    message: "Runtime source references no process, global, module-system, network or timer identifier.",
   })),
 );
 

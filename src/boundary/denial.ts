@@ -1,9 +1,7 @@
 import type { Denied } from "@/src/boundary/authorize";
 
-/** Status per decision outcome; an allowed outcome would need a reviewed entry here. */
-const STATUS_BY_OUTCOME = Object.freeze({ denied: 403 } as const);
-
-export const DENIAL_STATUS: 403 = STATUS_BY_OUTCOME.denied;
+/** The only status the boundary produces; an allowed outcome would need a reviewed change here. */
+export const DENIAL_STATUS = 403;
 
 /**
  * Headers sent with every denial. None of them stores anything on the client, none names this
@@ -44,8 +42,12 @@ export const DENIAL_PAGE: string = [
   "",
 ].join("\n");
 
-/** Builds the denial for any method; HEAD responses carry the same headers and no body. */
-export function denialResponse(decision: Denied, method: string): Response {
+/**
+ * Builds the denial for any method; HEAD responses carry the same headers and no body. The
+ * `Denied` parameter type is the proof that only a denial reaches this point; nothing else is read
+ * from it because the response must not vary with the reason.
+ */
+export function denialResponse(_decision: Denied, method: string): Response {
   const body = method.toUpperCase() === "HEAD" ? null : DENIAL_PAGE;
-  return new Response(body, { status: STATUS_BY_OUTCOME[decision.outcome], headers: new Headers(DENIAL_HEADERS) });
+  return new Response(body, { status: DENIAL_STATUS, headers: new Headers(DENIAL_HEADERS) });
 }

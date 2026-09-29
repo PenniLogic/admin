@@ -1,0 +1,3 @@
+import x from "typescript/./lib/typescript.js";
+
+export const planted = x;

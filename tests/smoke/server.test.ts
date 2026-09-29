@@ -217,7 +217,11 @@ describe("requests answered by the framework before the boundary", () => {
     expect(response.body.trim()).toBe("Internal Server Error");
     expect(response.headers.has("set-cookie")).toBe(false);
     expectNoForbiddenHeaders(response.headers.keys());
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    // The framework writes its error asynchronously; poll for it instead of guessing a delay.
+    const deadline = Date.now() + 5000;
+    while (!serverOutput.slice(before).includes("TypeError") && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     const logged = serverOutput.slice(before);
     expect(logged).toMatch(/TypeError/);
     expect(logged).not.toMatch(/planted=marker|cookie:/i);
