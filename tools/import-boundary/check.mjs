@@ -14,10 +14,11 @@ const root = rootIndex === -1 ? repositoryRoot : (process.argv[rootIndex + 1] ??
 
 const result = scanRepository(root);
 for (const violation of result.violations) {
-  console.error(`${violation.rule}: ${violation.file} -> ${violation.specifier} (${violation.message})`);
+  const location = violation.line === undefined ? violation.file : `${violation.file}:${String(violation.line)}`;
+  console.error(`${violation.rule}: ${location} -> ${violation.specifier} (${violation.message})`);
 }
 if (result.violations.length > 0) {
   console.error(`Import boundary violated: ${String(result.violations.length)} finding(s) in ${result.root}`);
   process.exit(1);
 }
-console.log(`Import boundary intact: ${String(result.files.length)} source files, manifest and lockfile checked.`);
+console.log(`Import boundary intact: ${String(result.files.length)} source files, manifest, lockfile and configuration checked.`);

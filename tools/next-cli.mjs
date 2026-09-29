@@ -6,10 +6,10 @@
  * machine. The wrapper avoids a shell-specific environment assignment in package.json.
  */
 import { spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
-const require = createRequire(import.meta.url);
-const nextBin = require.resolve("next/dist/bin/next");
+// Located by path rather than through a resolver so no indirect module loader exists in this tree.
+const nextBin = fileURLToPath(new URL("../node_modules/next/dist/bin/next", import.meta.url));
 
 const result = spawnSync(process.execPath, [nextBin, ...process.argv.slice(2)], {
   stdio: "inherit",

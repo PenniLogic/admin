@@ -1,13 +1,14 @@
 import type { NextConfig } from "next";
 
 // The scaffold has no pages, images, fonts, client bundles or remote resources.
-// Every request is decided in proxy.ts and the catch-all route; nothing here relaxes that.
-// URL normalization redirects are disabled so no response leaves the server before the boundary runs.
+// Every request the framework forwards is decided in proxy.ts; the catch-all route is a backstop.
+// URL-normalization redirects are disabled so no response leaves the server before the boundary runs.
+// tools/import-boundary/policy.mjs pins the complete set of keys this file may contain.
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   skipTrailingSlashRedirect: true,
-  skipMiddlewareUrlNormalize: true,
+  skipProxyUrlNormalize: true,
 };
 
 export default nextConfig;

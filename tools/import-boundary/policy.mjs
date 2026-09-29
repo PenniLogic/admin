@@ -18,10 +18,12 @@ export const RULES = Object.freeze({
   escapesRepository: "escapes-repository",
   absoluteOrRemote: "absolute-or-remote-specifier",
   nonLiteralSpecifier: "non-literal-dynamic-specifier",
+  indirectLoader: "indirect-module-loader",
   undeclaredDependency: "undeclared-dependency",
   nonRegistryDependency: "non-registry-or-inexact-dependency",
   workspaceOrBundle: "workspace-or-bundled-dependency",
   lockfile: "lockfile-provenance",
+  resolutionSurface: "resolution-surface",
 });
 
 /**
@@ -39,8 +41,45 @@ export const CUSTOMER_CODE_PATTERN =
 /** Every package in the organization scope or with the organization prefix. */
 export const ORGANIZATION_PACKAGE_PATTERN = /^(?:@pennilogic\/|pennilogic-)/i;
 
-/** Absolute filesystem paths, URLs and direct node_modules paths are never valid specifiers. */
-export const ABSOLUTE_OR_REMOTE_PATTERN = /^(?:\/|\\|[A-Za-z]:[\\/]|file:|https?:|data:|node_modules\/)/i;
+/**
+ * Absolute filesystem paths, URLs, direct node_modules paths and package subpath imports (`#name`,
+ * which the manifest could map anywhere) are never valid specifiers.
+ */
+export const ABSOLUTE_OR_REMOTE_PATTERN = /^(?:\/|\\|[A-Za-z]:[\\/]|file:|https?:|data:|node_modules\/|#)/i;
+
+/**
+ * Identifiers that load or evaluate code outside the static import graph. Their presence anywhere
+ * in scanned source is refused, so a specifier can never be assembled at run time.
+ */
+export const INDIRECT_LOADER_IDENTIFIERS = Object.freeze(["createRequire", "eval", "Function"]);
+
+/** Property accesses that resolve specifiers at run time. */
+export const INDIRECT_LOADER_PROPERTIES = Object.freeze(["require.resolve", "import.meta.resolve"]);
+
+/**
+ * The only path mapping the compiler, the bundler and the test runner may share. Anything else
+ * could remap an accepted specifier to a location outside this repository.
+ */
+export const TSCONFIG_PINNED_PATHS = Object.freeze({ "@/*": Object.freeze(["./*"]) });
+
+/** Compiler options that relocate module resolution and are therefore refused. */
+export const TSCONFIG_REFUSED_OPTIONS = Object.freeze(["baseUrl", "rootDirs", "rootDir", "typeRoots", "types"]);
+
+/** Top-level tsconfig keys that pull configuration or files from elsewhere. */
+export const TSCONFIG_REFUSED_KEYS = Object.freeze(["extends", "references", "files"]);
+
+/**
+ * The complete set of keys next.config.ts may contain. Every resolution or transpilation surface
+ * (`turbopack`, `webpack`, `transpilePackages`, `experimental`, `outputFileTracingRoot`,
+ * `serverExternalPackages`, `rewrites`, `redirects`, `basePath`, `assetPrefix`, ...) is absent by
+ * construction and must be added here by a reviewed change.
+ */
+export const NEXT_CONFIG_ALLOWED_KEYS = Object.freeze([
+  "reactStrictMode",
+  "poweredByHeader",
+  "skipTrailingSlashRedirect",
+  "skipProxyUrlNormalize",
+]);
 
 /** Dependency versions must be exact registry releases; ranges, links, files and URLs are refused. */
 export const EXACT_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
@@ -49,9 +88,9 @@ export const EXACT_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 export const REGISTRY_URL_PREFIX = "https://registry.npmjs.org/";
 
 /**
- * ESLint `no-restricted-imports` patterns mirroring the name-based rules, so a planted import fails
- * `npm run lint` as well as `npm test`. Repository-escape and provenance rules need path resolution
- * and manifest access, which the scanner provides.
+ * ESLint `no-restricted-imports` patterns mirroring the name-based rules for static imports, so a
+ * planted import fails `npm run lint` as well as `npm test`. Dynamic imports, repository escapes,
+ * indirect loaders, configuration surfaces and provenance need the scanner, which is authoritative.
  */
 export const RESTRICTED_IMPORT_PATTERNS = Object.freeze([
   {
@@ -71,6 +110,15 @@ export const RESTRICTED_IMPORT_PATTERNS = Object.freeze([
     message: "Import only repository files, Node.js builtins and declared registry packages.",
   },
 ]);
+
+/** ESLint `no-restricted-imports` paths mirroring the indirect-loader rule for the module builtin. */
+export const RESTRICTED_IMPORT_PATHS = Object.freeze(
+  ["node:module", "module"].map((name) => ({
+    name,
+    importNames: ["createRequire"],
+    message: "createRequire assembles specifiers at run time and is refused by the admin import boundary.",
+  })),
+);
 
 /**
  * Returns the package name of a bare specifier (`@scope/name/sub` -> `@scope/name`).

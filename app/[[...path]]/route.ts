@@ -5,8 +5,10 @@ import { denialResponse } from "@/src/boundary/denial";
 export const dynamic = "force-dynamic";
 
 /**
- * Second layer behind proxy.ts: this optional catch-all owns every path, so a request that reaches
- * routing at all is still denied instead of finding a page, an API handler or a 404 document.
+ * Backstop behind proxy.ts: this optional catch-all owns every path that reaches routing, so no
+ * page or API handler can be found. It is not the boundary. Without proxy.ts the framework would
+ * still serve built static assets and its own 404 document before routing; proxy.ts is what denies
+ * every forwarded request.
  */
 function deny(request: Request): Response {
   return denialResponse(authorize(), request.method);

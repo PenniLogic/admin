@@ -1,0 +1,1 @@
+export type Planted = import("@pennilogic/web").Session;

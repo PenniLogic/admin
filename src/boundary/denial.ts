@@ -1,13 +1,13 @@
 import type { Denied } from "@/src/boundary/authorize";
 
-export const DENIAL_STATUS = 403;
+/** Status per decision outcome; an allowed outcome would need a reviewed entry here. */
+const STATUS_BY_OUTCOME = Object.freeze({ denied: 403 } as const);
 
-/** Header carrying the machine-readable reason so callers can tell this denial from an upstream 403. */
-export const DENIAL_REASON_HEADER = "admin-denial-reason";
+export const DENIAL_STATUS: 403 = STATUS_BY_OUTCOME.denied;
 
 /**
- * Headers sent with every denial. None of them stores anything on the client, and the policy
- * forbids every script, style, image, frame and form on the denial page itself.
+ * Headers sent with every denial. None of them stores anything on the client, none names this
+ * service, and the policy forbids every script, style, image, frame and form on the page itself.
  */
 export const DENIAL_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   "content-type": "text/html; charset=utf-8",
@@ -20,35 +20,32 @@ export const DENIAL_HEADERS: Readonly<Record<string, string>> = Object.freeze({
 });
 
 /**
- * Self-contained denial document: no scripts, styles, links, images or external resources, so it
- * renders identically under the strict policy above and with assistive technology.
+ * Neutral, self-contained denial document. It says nothing about what the service is, how it is
+ * configured or how access could be obtained; the decision reason stays in code and tests. It loads
+ * no script, style, link, image or external resource, so it renders identically under the strict
+ * policy above and with assistive technology.
  */
-export function renderDenialPage(decision: Denied): string {
-  return [
-    "<!doctype html>",
-    '<html lang="en">',
-    "<head>",
-    '<meta charset="utf-8">',
-    '<meta name="viewport" content="width=device-width, initial-scale=1">',
-    '<meta name="robots" content="noindex, nofollow">',
-    "<title>Access denied</title>",
-    "</head>",
-    "<body>",
-    "<main>",
-    "<h1>Access denied</h1>",
-    "<p>This administrative console has no identity provider configured, so every request is refused.</p>",
-    `<p>Reason code: <code>${decision.reason}</code></p>`,
-    "</main>",
-    "</body>",
-    "</html>",
-    "",
-  ].join("\n");
-}
+export const DENIAL_PAGE: string = [
+  "<!doctype html>",
+  '<html lang="en">',
+  "<head>",
+  '<meta charset="utf-8">',
+  '<meta name="viewport" content="width=device-width, initial-scale=1">',
+  '<meta name="robots" content="noindex, nofollow">',
+  "<title>Access denied</title>",
+  "</head>",
+  "<body>",
+  "<main>",
+  "<h1>Access denied</h1>",
+  "<p>This service does not accept requests.</p>",
+  "</main>",
+  "</body>",
+  "</html>",
+  "",
+].join("\n");
 
 /** Builds the denial for any method; HEAD responses carry the same headers and no body. */
 export function denialResponse(decision: Denied, method: string): Response {
-  const headers = new Headers(DENIAL_HEADERS);
-  headers.set(DENIAL_REASON_HEADER, decision.reason);
-  const body = method.toUpperCase() === "HEAD" ? null : renderDenialPage(decision);
-  return new Response(body, { status: DENIAL_STATUS, headers });
+  const body = method.toUpperCase() === "HEAD" ? null : DENIAL_PAGE;
+  return new Response(body, { status: STATUS_BY_OUTCOME[decision.outcome], headers: new Headers(DENIAL_HEADERS) });
 }

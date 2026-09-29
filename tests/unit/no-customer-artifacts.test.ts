@@ -27,7 +27,13 @@ const ALLOWED_HOSTS = new Set([
   "example.invalid",
 ]);
 
-const HOSTNAME = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|in|app|io|net|org|dev|co|xyz|cloud|tech|invalid)\b/gi;
+/**
+ * Hostname tripwire. This is a heuristic with a finite top-level-domain list, chosen to avoid
+ * matching file names such as `next.config.ts`; the structural guarantees are the import boundary
+ * and the absence of any cookie handling, not this list.
+ */
+const HOSTNAME =
+  /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|in|app|io|net|org|dev|co|xyz|cloud|tech|ai|money|finance|bank|pay|cash|fin|info|biz|me|us|uk|eu|invalid)\b/gi;
 
 /** Cookie handling of any kind: setting, reading, prefixes and domain scoping. */
 const COOKIE_HANDLING = /set-cookie|document\.cookie|\bcookies?\s*\(|\.cookies\b|__host-|__secure-|;\s*domain=|\bcookieStore\b/gi;
@@ -36,6 +42,8 @@ function listFiles(directory: string): string[] {
   const files: string[] = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const full = path.join(directory, entry.name);
+    // Links are refused outright: the boundary is lexical and must never be followed elsewhere.
+    expect(entry.isSymbolicLink(), `${full} is a symbolic link or junction`).toBe(false);
     if (entry.isDirectory()) {
       if (!IGNORED.has(entry.name)) {
         files.push(...listFiles(full));
@@ -70,7 +78,7 @@ describe("no customer artifacts", () => {
     ]);
   });
 
-  it("keeps cookies, sessions, storage, environment and network locations out of runtime source", () => {
+  it("keeps cookies, sessions, storage, environment, loaders and network locations out of runtime source", () => {
     for (const file of runtimeFiles()) {
       const source = read(file);
       expect(source, file).not.toMatch(/cookie/i);
@@ -80,6 +88,7 @@ describe("no customer artifacts", () => {
       expect(source, file).not.toMatch(/https?:\/\//i);
       expect(source, file).not.toMatch(/\bfetch\s*\(/);
       expect(source, file).not.toMatch(/bearer|jwt|oauth|oidc|saml|["']authorization["']/i);
+      expect(source, file).not.toMatch(/createRequire|\beval\b|new Function|require\s*\(|import\s*\(/);
       expect(source.match(HOSTNAME) ?? [], file).toEqual([]);
     }
   });

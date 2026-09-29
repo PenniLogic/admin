@@ -1,0 +1,1 @@
+export const planted: unknown = globalThis.eval("require('@pennilogic/web')");
