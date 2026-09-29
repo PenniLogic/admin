@@ -18,6 +18,7 @@ import ts from "typescript";
 
 import {
   ABSOLUTE_OR_REMOTE_PATTERN,
+  ALIAS_TRAVERSAL_PATTERN,
   COMPUTED_ACCESS_REFUSED_OBJECTS,
   CUSTOMER_CODE_PATTERN,
   EXACT_VERSION_PATTERN,
@@ -149,13 +150,16 @@ function objectName(object) {
 }
 
 /**
- * Builtin module name of a specifier, without the `node:` scheme, or null.
+ * Builtin module name of a specifier, without the `node:` scheme and without any subpath
+ * (`node:dns/promises` -> `dns`), or null when the first segment is not a builtin.
  * @param {string} specifier
  * @returns {string | null}
  */
 function builtinNameOf(specifier) {
   const bare = specifier.startsWith("node:") ? specifier.slice("node:".length) : specifier;
-  return BUILTINS.has(bare) ? bare : null;
+  const first = bare.slice(0, bare.includes("/") ? bare.indexOf("/") : bare.length);
+  // Either the whole name is a builtin (`dns/promises` is one) or its first segment is (`net/x`).
+  return BUILTINS.has(bare) || BUILTINS.has(first) ? first : null;
 }
 
 /**
@@ -430,6 +434,10 @@ export function checkSpecifier(specifier, file, context) {
     return violation(RULES.customerCode, "Customer web code and shared client bundles are never imported.");
   }
   if (specifier.startsWith("@/")) {
+    // The alias is root-anchored, so a dot, dot-dot or empty segment has no legitimate use.
+    if (ALIAS_TRAVERSAL_PATTERN.test(specifier)) {
+      return violation(RULES.escapesRepository, "Alias imports name a path from the root; dot, dot-dot and empty segments are refused.");
+    }
     const target = path.resolve(context.root, specifier.slice(2));
     return resolvesToRepositoryFile(context.root, target)
       ? null
@@ -485,15 +493,23 @@ export function isRuntimeAllowedSpecifier(specifier, typeOnly = false) {
 }
 
 /**
- * Whether a root-relative POSIX path (as written after `@/`) names runtime source: a runtime file by
- * its exact name, with its real extension or none, or any file below a runtime directory.
+ * Whether a root-relative POSIX path (as written after `@/`) names runtime source. Membership is
+ * decided on segments, not text: every segment must be a plain name (no `.`, `..`, empty or
+ * dot-leading segment), and the path must be a runtime file by its exact name — with its real
+ * extension or none — or a file strictly below a runtime directory. `@/src/../tools/x` therefore
+ * never reaches the runtime set, whatever it would resolve to.
  * @param {string} relative
  */
 function isRuntimeRelativePath(relative) {
+  const segments = relative.split("/");
+  if (segments.some((segment) => segment === "" || segment.startsWith("."))) {
+    return false;
+  }
   if (RUNTIME_FILES.some((file) => relative === file || relative === file.replace(/\.[cm]?[jt]sx?$/, ""))) {
     return true;
   }
-  return RUNTIME_DIRECTORIES.some((directory) => relative.startsWith(`${directory}/`) && relative.length > directory.length + 1);
+  const [first] = segments;
+  return first !== undefined && RUNTIME_DIRECTORIES.includes(first) && segments.length > 1;
 }
 
 const RUNTIME_IMPORT_MESSAGE =

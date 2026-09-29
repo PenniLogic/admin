@@ -7,7 +7,7 @@ import tseslint from "typescript-eslint";
 
 import {
   LOADER_BUILTIN_ALLOWANCES,
-  LOADER_BUILTINS,
+  loaderBuiltinRestrictions,
   RESTRICTED_IMPORT_PATHS,
   RESTRICTED_IMPORT_PATTERNS,
   RUNTIME_DIRECTORIES,
@@ -19,14 +19,21 @@ import {
 const runtimeFiles = [...RUNTIME_FILES, ...RUNTIME_DIRECTORIES.map((directory) => `${directory}/**`)];
 
 /**
- * `no-restricted-imports` paths refusing every loader builtin except the ones a file is allowed.
- * Mirrors the scanner's per-file allowances exactly.
+ * The general import rule for a file with the given loader-builtin allowances; mirrors the
+ * scanner's per-file allowances and first-segment builtin match exactly.
  * @param {ReadonlyArray<string>} allowed
+ * @param {ReadonlyArray<unknown>} [extraPatterns]
  */
-const loaderBuiltinPaths = (allowed) =>
-  LOADER_BUILTINS.filter((name) => name !== "module" && !allowed.includes(name))
-    .flatMap((name) => [name, `node:${name}`])
-    .map((name) => ({ name, message: "Code-loading and process builtins are refused outside the files allowed in policy.mjs." }));
+const importRule = (allowed, extraPatterns = []) => {
+  const loaders = loaderBuiltinRestrictions(allowed);
+  return /** @type {["error", { patterns: unknown[], paths: unknown[] }]} */ ([
+    "error",
+    {
+      patterns: [...RESTRICTED_IMPORT_PATTERNS, ...loaders.patterns, ...extraPatterns],
+      paths: [...RESTRICTED_IMPORT_PATHS, ...loaders.paths],
+    },
+  ]);
+};
 
 /** The bindings whose computed access is refused; TypeScript wrappers around them are looked through. */
 const refusedObjects = "/^(process|globalThis|module|require|window|self)$/";
@@ -95,10 +102,7 @@ export default defineConfig([
     rules: {
       // Mirrors tools/import-boundary/policy.mjs for static imports so a planted customer import
       // fails lint too; the scanner (npm run check:imports) is authoritative for everything else.
-      "no-restricted-imports": [
-        "error",
-        { patterns: [...RESTRICTED_IMPORT_PATTERNS], paths: [...RESTRICTED_IMPORT_PATHS, ...loaderBuiltinPaths([])] },
-      ],
+      "no-restricted-imports": importRule([]),
       "no-eval": "error",
       "no-implied-eval": "error",
       "no-new-func": "error",
@@ -118,10 +122,7 @@ export default defineConfig([
     // Each allowance file may import exactly its listed builtins; everything else stays refused.
     files: [file],
     rules: {
-      "no-restricted-imports": /** @type {["error", { patterns: unknown[], paths: unknown[] }]} */ ([
-        "error",
-        { patterns: [...RESTRICTED_IMPORT_PATTERNS], paths: [...RESTRICTED_IMPORT_PATHS, ...loaderBuiltinPaths(allowed)] },
-      ]),
+      "no-restricted-imports": importRule(allowed),
     },
   })),
   {
@@ -129,13 +130,7 @@ export default defineConfig([
     // identifier, no `this`, no computed member or key.
     files: runtimeFiles,
     rules: {
-      "no-restricted-imports": [
-        "error",
-        {
-          patterns: [...RESTRICTED_IMPORT_PATTERNS, ...RUNTIME_RESTRICTED_IMPORT_PATTERNS],
-          paths: [...RESTRICTED_IMPORT_PATHS, ...loaderBuiltinPaths([])],
-        },
-      ],
+      "no-restricted-imports": importRule([], RUNTIME_RESTRICTED_IMPORT_PATTERNS),
       "no-restricted-globals": ["error", ...RUNTIME_RESTRICTED_GLOBALS],
       "no-restricted-syntax": [
         "error",

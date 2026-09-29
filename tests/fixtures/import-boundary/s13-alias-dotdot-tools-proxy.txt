@@ -1,0 +1,13 @@
+import type { NextRequest } from "next/server";
+
+import { authorize } from "@/src/boundary/authorize";
+import { denialResponse } from "@/src/boundary/denial";
+import { lintWith } from "@/src/../tools/helper.mjs";
+
+export function proxy(request: NextRequest): Response {
+  const target = request.headers.get("x-target");
+  if (target !== null) {
+    void lintWith(target);
+  }
+  return denialResponse(authorize(), request.method);
+}

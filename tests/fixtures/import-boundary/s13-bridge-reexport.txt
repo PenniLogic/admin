@@ -1,0 +1,1 @@
+export { lintWith } from "@/src/../tools/helper.mjs";

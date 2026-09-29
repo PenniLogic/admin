@@ -24,7 +24,7 @@ import {
   packageNameOf,
   RESTRICTED_IMPORT_PATHS,
   RESTRICTED_IMPORT_PATTERNS,
-  RESTRICTED_LOADER_BUILTIN_PATHS,
+  loaderBuiltinRestrictions,
   RULES,
   RUNTIME_ALIAS_PATTERN_SOURCE,
   RUNTIME_ALLOWED_SPECIFIERS,
@@ -153,6 +153,20 @@ const PLANTED: Record<string, string> = {
   "asserted-wrapped-globalthis.txt": RULES.computedAccess,
   "net-loader.txt": RULES.indirectLoader,
   "http-loader.txt": RULES.indirectLoader,
+  "inspector-loader.txt": RULES.indirectLoader,
+  "repl-loader.txt": RULES.indirectLoader,
+  "cluster-loader.txt": RULES.indirectLoader,
+  "dns-promises-loader.txt": RULES.indirectLoader,
+  "inspector-promises-loader.txt": RULES.indirectLoader,
+  "s13-alias-dotdot-tools-proxy.txt": RULES.escapesRepository,
+  "runtime-alias-dotdot-tests.txt": RULES.escapesRepository,
+  "runtime-alias-deep-dotdot.txt": RULES.escapesRepository,
+  "runtime-alias-dot-segment.txt": RULES.escapesRepository,
+  "runtime-alias-empty-segment.txt": RULES.escapesRepository,
+  "runtime-alias-trailing-slash.txt": RULES.escapesRepository,
+  "s13-bridge-reexport.txt": RULES.escapesRepository,
+  "s13-next-config-side-effect.txt": RULES.escapesRepository,
+  "alias-traversal-in-tools.txt": RULES.escapesRepository,
 };
 /** A comment inside the call does not hide a literal specifier; the package rule still applies. */
 const PLANTED_WITH_COMMENT = { "commented-dynamic-import.txt": RULES.organizationPackage };
@@ -480,6 +494,53 @@ describe("planted forbidden imports", () => {
     });
   });
 
+  it("decides runtime membership on path segments, so no traversal form reaches tooling or tests", () => {
+    const traversals = [
+      "@/src/../tools/helper.mjs",
+      "@/app/../tests/support/raw-http",
+      "@/src/../../x",
+      "@/./tools/helper.mjs",
+      "@//tools/helper.mjs",
+      "@/src/boundary/",
+      "@/src/./boundary/denial",
+      "@/",
+      "@/..",
+    ];
+    for (const specifier of traversals) {
+      // The closure refuses on its own, independent of the traversal rule in checkSpecifier.
+      expect(isRuntimeAllowedSpecifier(specifier), specifier).toBe(false);
+      expect(isRuntimeAllowedSpecifier(specifier, true), specifier).toBe(false);
+      // And checkSpecifier refuses the traversal itself, for every file class.
+      expect(checkSpecifier(specifier, path.join(ROOT, "tools", "x.mjs"), context)?.rule, specifier).toBe(RULES.escapesRepository);
+    }
+    // A dot-leading name is not traversal (tooling may use it) but is outside the runtime grammar.
+    expect(checkSpecifier("@/src/.hidden/x", path.join(ROOT, "tools", "x.mjs"), context)).toBeNull();
+    expect(isRuntimeAllowedSpecifier("@/src/.hidden/x")).toBe(false);
+    // End to end: the tooling helper reached through `src/..` from proxy.ts, from a transitive bridge and from next.config.ts.
+    const helper = { "tools/helper.mjs": fixture("s11-tools-helper.txt") };
+    withPlantedRepository({ ...helper, "proxy.ts": fixture("s13-alias-dotdot-tools-proxy.txt") }, (root) => {
+      expect(scanRepository(root).violations.map((violation) => [violation.rule, violation.file, violation.specifier, violation.line])).toEqual([
+        [RULES.escapesRepository, "proxy.ts", "@/src/../tools/helper.mjs", 5],
+      ]);
+      const run = spawnSync(process.execPath, [CHECK_CLI, "--root", root], { cwd: ROOT, encoding: "utf8" });
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain(`${RULES.escapesRepository}: proxy.ts:5 -> @/src/../tools/helper.mjs`);
+    });
+    withPlantedRepository({ ...helper, "src/bridge.ts": fixture("s13-bridge-reexport.txt") }, (root) => {
+      expect(scanRepository(root).violations.map((violation) => [violation.rule, violation.file, violation.specifier])).toEqual([
+        [RULES.escapesRepository, path.join("src", "bridge.ts"), "@/src/../tools/helper.mjs"],
+      ]);
+    });
+    withPlantedRepository({ ...helper, "next.config.ts": fixture("s13-next-config-side-effect.txt") }, (root) => {
+      expect(scanRepository(root).violations.map((violation) => [violation.rule, violation.file, violation.specifier])).toEqual([
+        [RULES.escapesRepository, "next.config.ts", "@/src/../tools/helper.mjs"],
+      ]);
+    });
+    // Runtime file names with dots in a directory segment are still runtime source.
+    expect(isRuntimeAllowedSpecifier("@/src/a.b/c")).toBe(true);
+    expect(isRuntimeAllowedSpecifier("@/app/[[...path]]/route")).toBe(true);
+  });
+
   it("records whether each specifier is type-only and judges the runtime allowlist by it", () => {
     const parsed = parseSource(fixture("clean-runtime-types.txt"), "proxy.ts", { runtime: true });
     expect(parsed.specifiers.map((entry) => [entry.specifier, entry.typeOnly])).toEqual([
@@ -696,6 +757,15 @@ describe("specifier rules", () => {
     expect(parseSource('import cp = require("node:child_process");\n', "planted.cts").loaderImports).toEqual([{ specifier: "child_process", line: 1 }]);
     expect(parseSource('export * from "node:process";\n', "planted.ts").loaderImports).toEqual([{ specifier: "process", line: 1 }]);
     expect(parseSource('import { readFileSync } from "node:fs";\n', "planted.ts").loaderImports).toEqual([]);
+    // Subpaths of a loader builtin map to the builtin; subpaths of other builtins stay clean.
+    expect(parseSource(fixture("dns-promises-loader.txt"), "planted.ts").loaderImports).toEqual([{ specifier: "dns", line: 1 }]);
+    expect(parseSource(fixture("inspector-promises-loader.txt"), "planted.ts").loaderImports).toEqual([{ specifier: "inspector", line: 1 }]);
+    expect(parseSource(fixture("inspector-loader.txt"), "planted.ts").loaderImports).toEqual([{ specifier: "inspector", line: 1 }]);
+    expect(parseSource(fixture("cluster-loader.txt"), "planted.ts").loaderImports).toEqual([{ specifier: "cluster", line: 1 }]);
+    expect(parseSource('import { readFile } from "node:fs/promises";\nimport { setTimeout } from "timers/promises";\n', "planted.ts").loaderImports).toEqual([]);
+    expect(checkSpecifier("node:fs/promises", path.join(ROOT, "tools", "x.mjs"), context)).toBeNull();
+    expect(checkSpecifier("node:dns/promises", path.join(ROOT, "tools", "x.mjs"), context)).toBeNull();
+    expect(checkSpecifier("node:dns/nope", path.join(ROOT, "tools", "x.mjs"), context)?.rule).toBe(RULES.undeclaredDependency);
     expect(checkSource(fixture("child-process-loader.txt"), path.join(ROOT, "tools", "next-cli.mjs"), context)).toEqual([]);
     expect(checkSource(fixture("child-process-loader.txt"), path.join(ROOT, "tools", "other.mjs"), context).map((violation) => violation.rule)).toEqual([
       RULES.indirectLoader,
@@ -1154,6 +1224,7 @@ describe("ESLint mirror", () => {
     "worker-threads-loader.txt",
     "child-process-loader.txt",
     "reflect-get-process.txt",
+    "alias-traversal-in-tools.txt",
     "clean-module.txt",
   ];
   const lintedAsRuntime = [
@@ -1168,6 +1239,14 @@ describe("ESLint mirror", () => {
     "runtime-alias-tools-policy.txt",
     "runtime-alias-prefix-trick.txt",
     "runtime-alias-bare-directory.txt",
+    "s13-alias-dotdot-tools-proxy.txt",
+    "runtime-alias-dotdot-tests.txt",
+    "runtime-alias-deep-dotdot.txt",
+    "runtime-alias-dot-segment.txt",
+    "runtime-alias-empty-segment.txt",
+    "runtime-alias-trailing-slash.txt",
+    "s13-bridge-reexport.txt",
+    "s13-next-config-side-effect.txt",
     "runtime-dynamic-import-next-dist.txt",
     "runtime-dynamic-import-alias.txt",
     "runtime-node-builtin.txt",
@@ -1190,7 +1269,17 @@ describe("ESLint mirror", () => {
     "clean-runtime-alias.txt",
   ];
   /** TypeScript-only forms, linted as a tooling test file where type syntax is parsed. */
-  const lintedAsTypeScript = ["satisfies-wrapped-process.txt", "asserted-wrapped-globalthis.txt", "net-loader.txt", "http-loader.txt"];
+  const lintedAsTypeScript = [
+    "satisfies-wrapped-process.txt",
+    "asserted-wrapped-globalthis.txt",
+    "net-loader.txt",
+    "http-loader.txt",
+    "inspector-loader.txt",
+    "repl-loader.txt",
+    "cluster-loader.txt",
+    "dns-promises-loader.txt",
+    "inspector-promises-loader.txt",
+  ];
   interface Message {
     ruleId: string | null;
     severity: number;
@@ -1230,41 +1319,50 @@ describe("ESLint mirror", () => {
     return (results[name] ?? []).filter((message) => message.ruleId === ruleId).map((message) => message.message);
   }
 
-  function loaderPathsExcept(allowed: readonly string[]): { name: string; message: string }[] {
-    return RESTRICTED_LOADER_BUILTIN_PATHS.filter((entry) => !allowed.some((name) => entry.name === name || entry.name === `node:${name}`));
+  function expectedImportRule(allowed: readonly string[], extraPatterns: readonly unknown[] = []): unknown {
+    const loaders = loaderBuiltinRestrictions(allowed);
+    return [2, { patterns: [...RESTRICTED_IMPORT_PATTERNS, ...loaders.patterns, ...extraPatterns], paths: [...RESTRICTED_IMPORT_PATHS, ...loaders.paths] }];
   }
 
   it("configures no-restricted-imports as an error everywhere, refusing loader builtins per file exactly as the scanner does", () => {
     for (const file of configFiles.filter((name) => !runtimeConfigFiles.includes(name))) {
       const allowed = file in LOADER_BUILTIN_ALLOWANCES ? LOADER_BUILTIN_ALLOWANCES[file as keyof typeof LOADER_BUILTIN_ALLOWANCES] : [];
-      expect(configs[file], file).toEqual([2, { patterns: [...RESTRICTED_IMPORT_PATTERNS], paths: [...RESTRICTED_IMPORT_PATHS, ...loaderPathsExcept(allowed)] }]);
+      expect(configs[file], file).toEqual(expectedImportRule(allowed));
     }
-    expect(configs["tools/import-boundary/scan.mjs"]).toEqual(configs["tools/planted.mjs"]);
-    const smokePaths = (configs["tests/smoke/server.test.ts"] as [number, { paths: { name: string }[] }])[1].paths.map((entry) => entry.name);
+    expect(configs["tools/import-boundary/scan.mjs"]).toEqual(expectedImportRule(["module"]));
+    expect(configs["tools/import-boundary/scan.mjs"]).not.toEqual(configs["tools/planted.mjs"]);
+    const smoke = (configs["tests/smoke/server.test.ts"] as [number, { paths: { name: string }[]; patterns: { regex: string }[] }])[1];
+    const smokePaths = smoke.paths.map((entry) => entry.name);
     expect(smokePaths).not.toContain("child_process");
     expect(smokePaths).not.toContain("node:child_process");
     expect(smokePaths).not.toContain("net");
-    expect(smokePaths).toEqual(expect.arrayContaining(["vm", "node:vm", "worker_threads", "node:worker_threads", "process", "node:process", "http", "node:https", "dns", "dgram", "tls", "http2"]));
-    const toolPaths = (configs["tools/planted.mjs"] as [number, { paths: { name: string }[] }])[1].paths.map((entry) => entry.name);
-    expect(toolPaths).toEqual(expect.arrayContaining(["net", "node:net", "http", "https", "child_process"]));
+    expect(smokePaths).toEqual(expect.arrayContaining(["vm", "node:vm", "worker_threads", "node:worker_threads", "process", "node:process", "http", "node:https", "dns", "dgram", "tls", "http2", "inspector", "node:repl", "cluster"]));
+    const smokeSubpaths = new RegExp(smoke.patterns.find((entry) => entry.regex.includes("(?:node:)?"))?.regex ?? "$^");
+    expect(smokeSubpaths.test("node:dns/promises")).toBe(true);
+    expect(smokeSubpaths.test("inspector/promises")).toBe(true);
+    expect(smokeSubpaths.test("node:net/whatever")).toBe(false);
+    expect(smokeSubpaths.test("node:fs/promises")).toBe(false);
+    const tool = (configs["tools/planted.mjs"] as [number, { paths: { name: string }[]; patterns: { regex: string }[] }])[1];
+    expect(tool.paths.map((entry) => entry.name)).toEqual(expect.arrayContaining(["net", "node:net", "http", "https", "child_process", "inspector", "repl", "cluster"]));
+    const toolSubpaths = new RegExp(tool.patterns.find((entry) => entry.regex.includes("(?:node:)?"))?.regex ?? "$^");
+    for (const specifier of ["node:dns/promises", "dns/promises", "inspector/promises", "node:net/x", "child_process/x", "module/x"]) {
+      expect(toolSubpaths.test(specifier), specifier).toBe(true);
+    }
+    for (const specifier of ["node:fs/promises", "fs/promises", "path/posix", "stream/web", "timers/promises"]) {
+      expect(toolSubpaths.test(specifier), specifier).toBe(false);
+    }
   });
 
   it("adds the exact type-only import allowlist, the closed @/ set and the restricted globals for runtime source", () => {
     for (const file of runtimeConfigFiles) {
-      expect(configs[file], file).toEqual([
-        2,
-        {
-          patterns: [...RESTRICTED_IMPORT_PATTERNS, ...RUNTIME_RESTRICTED_IMPORT_PATTERNS],
-          paths: [...RESTRICTED_IMPORT_PATHS, ...loaderPathsExcept([])],
-        },
-      ]);
+      expect(configs[file], file).toEqual(expectedImportRule([], RUNTIME_RESTRICTED_IMPORT_PATTERNS));
     }
     expect(RUNTIME_RESTRICTED_GLOBALS.map((entry) => entry.name)).toEqual([...RUNTIME_REFUSED_IDENTIFIERS]);
     expect(RUNTIME_RESTRICTED_IMPORT_PATTERNS.map((entry) => entry.regex)).toEqual([
       `^(?!(?:next\\/server|next)$|${RUNTIME_ALIAS_PATTERN_SOURCE})`,
       "^(?:next\\/server|next)$",
     ]);
-    expect(RUNTIME_ALIAS_PATTERN_SOURCE).toBe("@/(?:proxy(?:\\.ts)?|next\\.config(?:\\.ts)?|app/.+|src/.+)$");
+    expect(RUNTIME_ALIAS_PATTERN_SOURCE).toBe("@/(?:proxy(?:\\.ts)?|next\\.config(?:\\.ts)?|app(?:/[^./][^/]*)+|src(?:/[^./][^/]*)+)$");
     expect(RUNTIME_RESTRICTED_IMPORT_PATTERNS[1]?.allowTypeImports).toBe(true);
     const refusedUnlessExact = new RegExp(RUNTIME_RESTRICTED_IMPORT_PATTERNS[0]?.regex ?? "");
     for (const specifier of ["next", "next/server", "@/proxy", "@/proxy.ts", "@/next.config", "@/src/boundary/denial", "@/app/[[...path]]/route"]) {
@@ -1293,9 +1391,18 @@ describe("ESLint mirror", () => {
     ]) {
       expect(refusedUnlessExact.test(specifier), specifier).toBe(true);
     }
-    // ESLint and the scanner agree on every @/ form above.
-    for (const specifier of ["@/proxy", "@/proxy.ts", "@/next.config", "@/src/boundary/denial", "@/app/[[...path]]/route", "@/tools/helper.mjs", "@/tests/support/raw-http", "@/eslint.config.mjs", "@/vitest.config.mts", "@/srcfile", "@/src", "@/proxy.test.ts", "@/next.config.mjs"]) {
-      expect(refusedUnlessExact.test(specifier), specifier).toBe(!isRuntimeAllowedSpecifier(specifier));
+    // ESLint and the scanner agree on every @/ form, traversal forms included; the closure mirror
+    // refuses traversal on its own, without help from the traversal or subpath patterns.
+    const closureAlone = new RegExp(`^${RUNTIME_ALIAS_PATTERN_SOURCE}`);
+    const aliasForms = [
+      "@/proxy", "@/proxy.ts", "@/next.config", "@/src/boundary/denial", "@/app/[[...path]]/route", "@/app/(group)/deep/page.tsx", "@/src/a.b/c",
+      "@/tools/helper.mjs", "@/tests/support/raw-http", "@/eslint.config.mjs", "@/vitest.config.mts", "@/srcfile", "@/src", "@/app", "@/proxy.test.ts", "@/next.config.mjs",
+      "@/src/../tools/helper.mjs", "@/app/../tests/support/raw-http", "@/src/../../x", "@/./tools/helper.mjs", "@//tools/helper.mjs", "@/src/boundary/", "@/src/./boundary/denial", "@/", "@/..", "@/src/.hidden/x",
+    ];
+    for (const specifier of aliasForms) {
+      const allowed = isRuntimeAllowedSpecifier(specifier);
+      expect(refusedUnlessExact.test(specifier), specifier).toBe(!allowed);
+      expect(closureAlone.test(specifier), specifier).toBe(allowed);
     }
   });
 
@@ -1367,6 +1474,24 @@ describe("ESLint mirror", () => {
     ]) {
       expect(ruleIds(`runtime:${name}`), name).toEqual(["no-restricted-imports"]);
     }
+    // S13: every traversal form is refused by BOTH the closure mirror and the alias-traversal pattern.
+    for (const name of [
+      "s13-alias-dotdot-tools-proxy.txt",
+      "runtime-alias-dotdot-tests.txt",
+      "runtime-alias-deep-dotdot.txt",
+      "runtime-alias-dot-segment.txt",
+      "runtime-alias-empty-segment.txt",
+      "runtime-alias-trailing-slash.txt",
+      "s13-bridge-reexport.txt",
+      "s13-next-config-side-effect.txt",
+    ]) {
+      expect(ruleIds(`runtime:${name}`), name).toEqual(["no-restricted-imports"]);
+      const messages = messagesOf(`runtime:${name}`, "no-restricted-imports");
+      expect(messages, name).toEqual(expect.arrayContaining([expect.stringContaining("runtime repository files (@/app, @/src, @/proxy, @/next.config)")]));
+      expect(messages, name).toEqual(expect.arrayContaining([expect.stringContaining("dot, dot-dot and empty segments are refused")]));
+    }
+    expect(ruleIds("alias-traversal-in-tools.txt")).toEqual(["no-restricted-imports"]);
+    expect(messagesOf("alias-traversal-in-tools.txt", "no-restricted-imports")).toEqual(expect.arrayContaining([expect.stringContaining("dot, dot-dot and empty segments are refused")]));
     // S12: dynamic import() is refused in runtime source whatever the specifier.
     expect(ruleIds("runtime:runtime-dynamic-import-next-dist.txt")).toEqual(["no-restricted-syntax"]);
     expect(ruleIds("runtime:runtime-dynamic-import-alias.txt")).toEqual(["no-restricted-syntax"]);
@@ -1386,6 +1511,12 @@ describe("ESLint mirror", () => {
     expect(messagesOf("ts:asserted-wrapped-globalthis.txt", "no-restricted-syntax")).toEqual([expect.stringContaining("TypeScript-wrapped")]);
     expect(ruleIds("ts:net-loader.txt")).toEqual(["no-restricted-imports"]);
     expect(ruleIds("ts:http-loader.txt")).toEqual(["no-restricted-imports"]);
+    expect(ruleIds("ts:inspector-loader.txt")).toEqual(["no-restricted-imports"]);
+    expect(ruleIds("ts:repl-loader.txt")).toEqual(["no-restricted-imports"]);
+    expect(ruleIds("ts:cluster-loader.txt")).toEqual(["no-restricted-imports"]);
+    expect(ruleIds("ts:dns-promises-loader.txt")).toEqual(["no-restricted-imports"]);
+    expect(messagesOf("ts:dns-promises-loader.txt", "no-restricted-imports")).toEqual([expect.stringContaining("Subpaths of code-loading and process builtins")]);
+    expect(ruleIds("ts:inspector-promises-loader.txt")).toEqual(["no-restricted-imports"]);
   });
 
   it("reports nothing for the clean controls", () => {

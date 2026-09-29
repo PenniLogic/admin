@@ -1,0 +1,3 @@
+import { lintWith } from "@//tools/helper.mjs";
+
+export const planted = lintWith;

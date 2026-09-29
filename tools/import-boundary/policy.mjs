@@ -57,6 +57,12 @@ export const ABSOLUTE_OR_REMOTE_PATTERN = /^(?:\/|\\|[A-Za-z]:[\\/]|file:|https?
  */
 export const PACKAGE_SUBPATH_ESCAPE_PATTERN = /^(?:@[^/]+\/)?[^./\\%][^/\\%]*\/(?:.*\/)?(?:\.\.?(?:\/|$)|.*[\\%])/;
 
+/**
+ * An `@/` alias specifier containing a dot, dot-dot or empty segment. The alias is anchored at the
+ * repository root, so traversal inside it has no legitimate use and is refused before resolution.
+ */
+export const ALIAS_TRAVERSAL_PATTERN = /^@\/(?:.*\/)?(?:\.\.?)?(?:\/|$)/;
+
 /** Any specifier that carries a backslash or percent-encoding, in any position. */
 export const OBFUSCATED_SPECIFIER_PATTERN = /[\\%]/;
 
@@ -103,6 +109,9 @@ export const LOADER_BUILTINS = Object.freeze([
   "worker_threads",
   "child_process",
   "process",
+  "inspector",
+  "repl",
+  "cluster",
   "net",
   "http",
   "https",
@@ -242,6 +251,11 @@ export const RESTRICTED_IMPORT_PATTERNS = Object.freeze([
     message: "Package subpaths must not contain dot segments, backslashes or percent-encoding.",
   },
   {
+    regex: ALIAS_TRAVERSAL_PATTERN.source,
+    caseSensitive: true,
+    message: "Alias imports name a path from the repository root; dot, dot-dot and empty segments are refused.",
+  },
+  {
     regex: OBFUSCATED_SPECIFIER_PATTERN.source,
     caseSensitive: false,
     message: "Specifiers must not contain backslashes or percent-encoding.",
@@ -253,19 +267,23 @@ const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 
 /**
  * Regular-expression source matching the `@/` specifiers that name runtime source: each runtime file
- * by its exact name (with its real extension or none) and anything below the runtime directories.
+ * by its exact name (with its real extension or none) and files strictly below the runtime
+ * directories. Segment grammar: every segment is a plain name — non-empty and not starting with a
+ * dot — so `@/src/../tools/x`, `@/./x`, `@//x` and `@/src/x/` never match, whatever they would
+ * resolve to. Mirrors `isRuntimeAllowedSpecifier` in the scanner.
  */
+const PLAIN_SEGMENT = "[^./][^/]*";
 export const RUNTIME_ALIAS_PATTERN_SOURCE = `@/(?:${[
   ...RUNTIME_FILES.map((file) => `${escapeRegExp(file.replace(/\.[cm]?[jt]sx?$/, ""))}(?:${escapeRegExp(file.slice(file.lastIndexOf(".")))})?`),
-  ...RUNTIME_DIRECTORIES.map((directory) => `${escapeRegExp(directory)}/.+`),
+  ...RUNTIME_DIRECTORIES.map((directory) => `${escapeRegExp(directory)}(?:/${PLAIN_SEGMENT})+`),
 ].join("|")})$`;
 
 /**
  * ESLint `no-restricted-imports` patterns for runtime source only: every specifier except the exact
  * allowed ones and runtime repository files through `@/` is refused, and the allowed package
  * specifiers must be type-only (`allowTypeImports` lets `import type` through the second pattern).
- * The `@/` closure mirrors `isRuntimeAllowedSpecifier`: tooling, tests, configuration and
- * `node_modules` can never be imported into the runtime.
+ * The `@/` closure mirrors `isRuntimeAllowedSpecifier`: tooling, tests, configuration,
+ * `node_modules` and any traversal form can never be imported into the runtime.
  */
 export const RUNTIME_RESTRICTED_IMPORT_PATTERNS = Object.freeze([
   {
@@ -291,13 +309,6 @@ export const RESTRICTED_IMPORT_PATHS = Object.freeze(
   })),
 );
 
-/** ESLint `no-restricted-imports` paths for every file without an allowance in LOADER_BUILTIN_ALLOWANCES. */
-export const RESTRICTED_LOADER_BUILTIN_PATHS = Object.freeze(
-  LOADER_BUILTINS.filter((name) => name !== "module")
-    .flatMap((name) => [name, `node:${name}`])
-    .map((name) => ({ name, message: "Code-loading and process builtins are refused outside the files allowed in policy.mjs." })),
-);
-
 /** ESLint `no-restricted-globals` entries mirroring the runtime-reference rule. */
 export const RUNTIME_RESTRICTED_GLOBALS = Object.freeze(
   RUNTIME_REFUSED_IDENTIFIERS.map((name) => ({
@@ -305,6 +316,30 @@ export const RUNTIME_RESTRICTED_GLOBALS = Object.freeze(
     message: "Runtime source references no process, global, module-system, network or timer identifier.",
   })),
 );
+
+/**
+ * ESLint `no-restricted-imports` entries refusing every loader builtin — exact names as `paths`,
+ * subpaths (`node:dns/promises`, `inspector/promises`) as one `patterns` entry — except the builtins
+ * a file is allowed. Mirrors the scanner's first-segment match and per-file allowances exactly.
+ * @param {ReadonlyArray<string>} allowed
+ * @returns {{ paths: { name: string, message: string }[], patterns: { regex: string, caseSensitive: boolean, message: string }[] }}
+ */
+export function loaderBuiltinRestrictions(allowed) {
+  const names = LOADER_BUILTINS.filter((name) => !allowed.includes(name));
+  const paths = names
+    .filter((name) => name !== "module")
+    .flatMap((name) => [name, `node:${name}`])
+    .map((name) => ({ name, message: "Code-loading and process builtins are refused outside the files allowed in policy.mjs." }));
+  // No allowance covers every loader builtin, so the subpath pattern always has at least one name.
+  const patterns = [
+    {
+      regex: `^(?:node:)?(?:${names.map(escapeRegExp).join("|")})/`,
+      caseSensitive: true,
+      message: "Subpaths of code-loading and process builtins are refused outside the files allowed in policy.mjs.",
+    },
+  ];
+  return { paths, patterns };
+}
 
 /**
  * Returns the package name of a bare specifier (`@scope/name/sub` -> `@scope/name`).

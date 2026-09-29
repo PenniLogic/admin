@@ -1,0 +1,12 @@
+import type { NextConfig } from "next";
+
+import "@/src/../tools/helper.mjs";
+
+const nextConfig: NextConfig = {
+  reactStrictMode: true,
+  poweredByHeader: false,
+  skipTrailingSlashRedirect: true,
+  skipProxyUrlNormalize: true,
+};
+
+export default nextConfig;
