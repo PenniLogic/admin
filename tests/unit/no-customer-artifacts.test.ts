@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +8,9 @@ import { describe, expect, it } from "vitest";
 const ROOT = path.resolve(fileURLToPath(import.meta.url), "../../..");
 const IGNORED = new Set(["node_modules", ".next", ".git", "coverage"]);
 const THIS_FILE = path.relative(ROOT, fileURLToPath(import.meta.url));
+const PINNED_SCHEMA = path.join("quality", "client-state-taxonomy", "client-state-taxonomy.schema.json");
+const PINNED_SCHEMA_SHA256 = "6bceee452e135835baa7733886d3aceae6322df5a6aefc0c9ea9f9d35ddebfc1";
+const SCHEMA_DOCUMENTATION_URI = '"$schema": "http://json-schema.org/draft-07/schema#"';
 
 /** Runtime source: everything that ships in or configures the server. */
 const RUNTIME = ["app", "src", "proxy.ts", "next.config.ts"];
@@ -63,6 +67,18 @@ function read(relative: string): string {
   return readFileSync(path.join(ROOT, relative), "utf8");
 }
 
+function unexpectedHosts(file: string, bytes: Buffer): string[] {
+  let source = bytes.toString("utf8");
+  if (file === PINNED_SCHEMA) {
+    if (createHash("sha256").update(bytes).digest("hex") !== PINNED_SCHEMA_SHA256) {
+      throw new Error("Pinned taxonomy schema bytes changed");
+    }
+    source = source.replace(SCHEMA_DOCUMENTATION_URI, '"$schema": ""');
+  }
+  const hosts = [...new Set((source.match(HOSTNAME) ?? []).map((host) => host.toLowerCase()))];
+  return hosts.filter((host) => !ALLOWED_HOSTS.has(host));
+}
+
 function runtimeFiles(): string[] {
   return relativeFiles().filter((file) => RUNTIME.some((entry) => file === entry || file.startsWith(entry + path.sep)));
 }
@@ -111,9 +127,36 @@ describe("no customer artifacts", () => {
       if (file === THIS_FILE || file === "package-lock.json") {
         continue;
       }
-      const hosts = [...new Set((read(file).match(HOSTNAME) ?? []).map((host) => host.toLowerCase()))];
-      expect(hosts.filter((host) => !ALLOWED_HOSTS.has(host)), file).toEqual([]);
+      expect(unexpectedHosts(file, readFileSync(path.join(ROOT, file))), file).toEqual([]);
     }
+  });
+
+  it("exempts only the immutable schema's literal documentation URI", () => {
+    expect(unexpectedHosts(PINNED_SCHEMA, readFileSync(path.join(ROOT, PINNED_SCHEMA)))).toEqual([]);
+  });
+
+  it.each([
+    path.join("quality", "other.schema.json"),
+    path.join("tools", "planted.mjs"),
+    path.join("src", "boundary", "authorize.ts"),
+  ])("still rejects the documentation hostname in another file: %s", (file) => {
+    expect(unexpectedHosts(file, Buffer.from(SCHEMA_DOCUMENTATION_URI))).toEqual(["json-schema.org"]);
+  });
+
+  it("rejects altered pinned schema bytes even when its hostname list is unchanged", () => {
+    const bytes = readFileSync(path.join(ROOT, PINNED_SCHEMA));
+    expect(() => unexpectedHosts(PINNED_SCHEMA, Buffer.concat([bytes, Buffer.from("\n")])))
+      .toThrow("Pinned taxonomy schema bytes changed");
+  });
+
+  it("rejects a network hostname added anywhere in the pinned schema", () => {
+    const source = read(PINNED_SCHEMA).replace('"title":', '"network": "https://runtime-network.invalid", "title":');
+    expect(() => unexpectedHosts(PINNED_SCHEMA, Buffer.from(source))).toThrow("Pinned taxonomy schema bytes changed");
+  });
+
+  it("still rejects a network hostname in runtime source", () => {
+    expect(unexpectedHosts(path.join("src", "boundary", "authorize.ts"), Buffer.from('fetch("https://runtime-network.invalid")')))
+      .toEqual(["runtime-network.invalid"]);
   });
 
   it("resolves every locked package from the public registry and nothing else", () => {
