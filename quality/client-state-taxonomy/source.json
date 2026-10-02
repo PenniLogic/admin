@@ -1,0 +1,26 @@
+{
+  "repository": "PenniLogic/docs",
+  "issue": "https://github.com/PenniLogic/docs/issues/1",
+  "commit": "a700e639585c61a4610e7b99dbd02b2dab28bdcc",
+  "tree": "3879d3893a3f289bd6b0d4474f09dbebf1fef195",
+  "taxonomy_version": "1.1.0",
+  "schema_version": 1,
+  "data": {
+    "path": "product/client-state-taxonomy.json",
+    "git_blob": "47c3b234fb3921cdd5057a77d95610d72da0805a",
+    "sha256": "040d2f0c27332ce3f6794a90139e714b3c50afb5b7340aa596d47b8866f2b3fb",
+    "bytes": 78795
+  },
+  "schema": {
+    "path": "product/client-state-taxonomy.schema.json",
+    "git_blob": "703c67f535852d91cf06f6b585b083dbdb1901c9",
+    "sha256": "6bceee452e135835baa7733886d3aceae6322df5a6aefc0c9ea9f9d35ddebfc1",
+    "bytes": 21422
+  },
+  "document": {
+    "path": "product/client-state-taxonomy.md",
+    "git_blob": "2a3b35572bfda0040e313e912f6ff6224c03469d",
+    "sha256": "7d8fc9d415c18c90c715726c09f93dc7774527dd17ea42a5a4b0a3587f172717",
+    "bytes": 74054
+  }
+}
