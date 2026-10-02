@@ -725,3 +725,175 @@ describe("synthetic stale versus offline", () => {
     expect(() => check(value)).toThrow("client-state-gate:data_display");
   });
 });
+
+function fixtureWithPlaceholder(state: string, id: string, replacement: string) {
+  const value = fixture([state]);
+  const surface = value.registry.surfaces[0];
+  const entry = value.evidence.observations[0];
+  if (surface === undefined || entry === undefined) throw new Error("Synthetic fixture is absent");
+  const previous = entry.placeholders[id];
+  if (previous === undefined) throw new Error("Synthetic fixture placeholder is absent");
+  if (id === "attempt" || id === "what_appears_here" || id === "still_available") {
+    surface[id] = replacement;
+  }
+  entry.placeholders[id] = { source: previous.source, value: replacement };
+  entry.copy = {
+    headline: entry.copy.headline.replaceAll(previous.value, replacement),
+    body: entry.copy.body.replaceAll(previous.value, replacement),
+  };
+  entry.recovery_actions = entry.recovery_actions.map((action) => ({
+    id: action.id,
+    label: action.label.replaceAll(previous.value, replacement),
+  }));
+  return value;
+}
+
+describe("independent HOLD regressions: dense unknown-input arrays", () => {
+  it("rejects a wholly sparse enumeration before counting its absent identifier", () => {
+    expect(() => taxonomyFirst(taxonomy, new Array<string>(1))).toThrow("client-state-gate:sparse_array");
+  });
+
+  it("rejects a published identifier followed by an absent array slot", () => {
+    const identifiers = ["offline"];
+    identifiers.length = 2;
+    expect(() => taxonomyFirst(taxonomy, identifiers)).toThrow("client-state-gate:sparse_array");
+  });
+
+  it("still checks dense known identifiers and rejects a dense undefined entry", () => {
+    expect(taxonomyFirst(taxonomy, ["offline", "stale"]).checked_identifiers).toBe(2);
+    expect(() => taxonomyFirst(taxonomy, ["offline", undefined])).toThrow("client-state-gate:text_required");
+  });
+
+  it("rejects absent registrations and recovery entries at the shared array boundary", () => {
+    const value = fixture(["offline"]);
+    value.registry.surfaces.length = 2;
+    expect(() => check(value)).toThrow("client-state-gate:sparse_array");
+    value.registry.surfaces = [registration(["offline"])];
+    const entry = syntheticObservation("offline");
+    entry.recovery_actions = new Array<{ id: string; label: string }>(1);
+    value.evidence.observations = [entry];
+    expect(() => check(value)).toThrow("client-state-gate:sparse_array");
+  });
+});
+
+describe("independent HOLD regressions: explicit code-based money in state copy", () => {
+  it.each([
+    { state: "quota_exceeded", id: "limit" },
+    { state: "error", id: "attempt" },
+    { state: "empty", id: "what_appears_here" },
+  ].flatMap((target) => ["USD 7.50", "7.50 USD"].map((money) => ({ ...target, money }))))(
+    "rejects both currency-code orderings in $state/$id: $money",
+    ({ state, id, money }) => {
+      expect(() => check(fixtureWithPlaceholder(state, id, money))).toThrow("client-state-gate:money_copy");
+    },
+  );
+
+  it.each(["INR 5", "5 INR", "EUR 1,000.00", "1,000.00 EUR", "JPY7", "7JPY", "CHF -7.50", "+7.50 CHF"])(
+    "rejects recognized currency codes, signed amounts and separators: %s",
+    (money) => {
+      expect(() => check(fixtureWithPlaceholder("quota_exceeded", "limit", money)))
+        .toThrow("client-state-gate:money_copy");
+    },
+  );
+
+  it.each(["headline", "body", "action"].flatMap((field) =>
+    ["USD 7.50", "7.50 USD"].map((money) => ({ field, money })),
+  ))("rejects money in the submitted rendered $field: $money", ({ field, money }) => {
+    const value = fixture(["offline"]);
+    const entry = syntheticObservation("offline");
+    if (field === "headline") entry.copy.headline = money;
+    else if (field === "body") entry.copy.body = money;
+    else entry.recovery_actions = [{ id: definition("offline").recoveryId, label: money }];
+    value.evidence.observations = [entry];
+    expect(() => check(value)).toThrow("client-state-gate:money_copy");
+  });
+
+  it.each([
+    { state: "quota_exceeded", id: "limit", value: "5 checks per day" },
+    { state: "quota_exceeded", id: "limit", value: "20 checks" },
+    { state: "stale", id: "last_updated", value: "2 hours ago" },
+    { state: "stale", id: "last_updated", value: "09:30 UTC" },
+    { state: "stale", id: "last_updated", value: "1 October" },
+    { state: "error", id: "attempt", value: "try 5 checks" },
+  ])("preserves non-monetary count/time copy: $value", ({ state, id, value }) => {
+    expect(check(fixtureWithPlaceholder(state, id, value)).client_state_coverage.status).toBe("synthetic_only");
+  });
+
+  it("retains the existing currency-symbol refusal", () => {
+    expect(() => check(fixtureWithPlaceholder("quota_exceeded", "limit", "$5")))
+      .toThrow("client-state-gate:unsafe_copy");
+  });
+});
+
+describe("independent HOLD regressions: affirmative generic-error connectivity", () => {
+  it.each(["surface", "region", "action"])("rejects unknown connectivity for default error at %s scope", (scope) => {
+    const value = fixture(["error"]);
+    const entry = syntheticObservation("error");
+    entry.scope = scope;
+    entry.connectivity = "unknown";
+    value.evidence.observations = [entry];
+    expect(() => check(value)).toThrow("client-state-gate:error_connectivity");
+  });
+
+  it("retains the default-error offline refusal and affirmative-online control", () => {
+    const value = fixture(["error"]);
+    expect(check(value).client_state_coverage.status).toBe("synthetic_only");
+    const entry = syntheticObservation("error");
+    entry.connectivity = "offline";
+    value.evidence.observations = [entry];
+    expect(() => check(value)).toThrow("client-state-gate:offline_condition");
+  });
+
+  it("does not impose a generic-request connectivity fact on the published validation variant", () => {
+    const value = fixture(["error"]);
+    const entry = syntheticObservation("error", { variant: "validation" });
+    entry.connectivity = "unknown";
+    value.evidence.observations = [entry];
+    expect(check(value).client_state_coverage.status).toBe("synthetic_only");
+  });
+
+  it.each(["empty", "loading", "stale", "permission_denied", "quota_exceeded", "degraded"])(
+    "preserves legitimately unknown connectivity for %s",
+    (state) => {
+      const value = fixture([state]);
+      const entry = syntheticObservation(state);
+      entry.connectivity = "unknown";
+      entry.offline_marker = "";
+      value.evidence.observations = [entry];
+      expect(check(value).client_state_coverage.status).toBe("synthetic_only");
+    },
+  );
+});
+
+describe("independent HOLD regressions: qualified plural availability", () => {
+  it.each(["Saved answer", "A saved answer", "Saved report", "Manual entry", "Access", "News", "Analysis"])(
+    "rejects singular availability even when registration and canonical substitution agree: %s",
+    (phrase) => {
+      expect(() => check(fixtureWithPlaceholder("quota_exceeded", "still_available", phrase)))
+        .toThrow("client-state-gate:plural_availability");
+    },
+  );
+
+  it.each([
+    "Saved widgets", "Analysis and status", "Saved answers and", "And saved answers",
+    "Saved answers and unqualified widgets",
+  ])("fails closed for unqualified or malformed availability: %s", (phrase) => {
+    expect(() => check(fixtureWithPlaceholder("quota_exceeded", "still_available", phrase)))
+      .toThrow("client-state-gate:plural_availability");
+  });
+
+  it.each([
+    "Saved answers", "Your saved reports", "Saved items and manual tools",
+    "Saved answers and everything outside AI", "Manual entry and your saved reports",
+    "Manual entry and navigation",
+  ])("qualifies a finite plural or coordinated subject: %s", (phrase) => {
+    expect(check(fixtureWithPlaceholder("quota_exceeded", "still_available", phrase)).client_state_coverage.status)
+      .toBe("synthetic_only");
+  });
+
+  it("rejects singular availability at registration even before the quota state is observed", () => {
+    const value = fixture(["offline"]);
+    value.registry.surfaces = [{ ...registration(["offline"]), still_available: "Saved answer" }];
+    expect(() => check(value)).toThrow("client-state-gate:plural_availability");
+  });
+});

@@ -62,7 +62,10 @@ There is no floating `main`, automatic update or runtime fetch.
 `taxonomy_version` (`1.1.0`), `coverage_status`, `client_states`, and `surfaces`.
 `client_states` is the client's explicit enumeration. `taxonomy_first` checks its actual
 subset relationship to DATA; duplicates and unknown IDs fail. Every applicable registration
-ID must also be in that enumeration. Inventory completeness requires the future surface
+ID must also be in that enumeration. The exported unknown-input API rejects every absent
+array index before any mapping, subset check or count; sparse arrays cannot occur in JSON,
+so this is a caller/adapter-input check, not a claim about malformed native registry files.
+Inventory completeness requires the future surface
 owner's review; this gate does not discover unregistered runtime features.
 
 Each surface follows SCHEMA's `definitions.surface_registration`: `surface_id`, `client`,
@@ -70,6 +73,25 @@ Each surface follows SCHEMA's `definitions.surface_registration`: `surface_id`, 
 Registered capabilities bind the `{capability}` placeholder. Registered copy fields bind
 their matching placeholders. Optional freshness windows must be positive safe integers.
 `coverage_status` is `registered` for nonempty registrations, otherwise `not_exercised`.
+
+`still_available` must qualify as a plural subject before it can be registered or substituted.
+This English-only consumer uses a closed vocabulary, not a suffix or an unchecked `and`:
+`answers`, `items`, `records`, `reports`, `tools`; their `saved` and `your saved` forms;
+`manual tools`; and `local records`. Two or more distinct clauses joined by ` and ` may use
+that vocabulary plus `manual entry`, `navigation` and `everything outside AI`.
+Matching is case-insensitive; punctuation, unknown modifiers/heads, singular clauses used
+alone and unqualified wording fail closed. This accepts the provider's two examples and the
+native synthetic phrase without claiming complete grammar. New product wording needs a
+reviewed qualification change, not a caller-supplied assertion that it is plural.
+
+The same copy guard checks registration values, source-tagged placeholders and submitted
+fully substituted headlines, bodies and action labels. In addition to currency symbols,
+it rejects an uppercase code from the pinned toolchain's finite
+`Intl.supportedValuesOf("currency")` vocabulary adjacent to an ASCII numeric amount in
+either order, including signed amounts, grouping/decimal separators and no-space forms.
+Ordinary counts and timestamps remain permitted. This performs no monetary calculation and
+does not claim to detect every locale spelling, historical currency code or natural-language
+monetary statement.
 
 `evidence.json` has exactly `gate_schema_version`, `client`, `taxonomy_version`,
 `evidence_kind`, and `observations`. Each observation has:
@@ -81,7 +103,7 @@ their matching placeholders. Optional freshness windows must be positive safe in
 | `recovery_actions` | All observed state recovery controls, each with `id` and `label`; exactly one is permitted |
 | `placeholders` | Exactly the used IDs, each with `source` and `value`; sources must match DATA, and registration-sourced values must match the registration |
 | `data_display` | Observed DATA display mode; must match the state |
-| `connectivity` | `online`, `offline` or `unknown`; `offline` requires the platform observation, never an inference from a failed request |
+| `connectivity` | `online`, `offline` or `unknown`; `offline` requires a platform observation and generic default `error` requires affirmative `online`, never an inference from a failed request |
 | `offline_marker` | Empty unless `stale` is offline, when it is exactly DATA's offline headline, not a second state/action |
 | `guarantees` | Exactly the state's DATA guarantee keys and values, collected by the adapter's assertions |
 | Optional `cause` or `variant` | A published cause binding or a non-cause copy variant; never both |
@@ -93,6 +115,10 @@ only its published, source-bound placeholders. The validation variant of `error`
 action-scoped and retains the registered submit label. Quota copy keeps its published
 positive availability wording and only the service-sourced limit/reset placeholders.
 No gate diagnostic echoes submitted copy, placeholder values, hidden identifiers or data.
+The `validation_rejected` variant does not inherit the generic request-failure requirement
+for affirmative connectivity: it may retain `unknown` after a service field rejection.
+The existing offline-versus-error refusal is unchanged. Other states whose published
+conditions do not require affirmative connectivity may also retain `unknown`.
 
 `client_state_coverage` checks every registration/applicable-state pair for an observation,
 then checks exact permitted copy, placeholders, one published action, scopes, causes,
@@ -116,7 +142,7 @@ by an independently reviewed adapter. A caller's declaration cannot establish th
 
 These tests prove the assertion machinery, including wrong copy, unknown IDs, planted
 omissions, duplicate actions, denial privacy and stale/offline distinctions. They do not
-prove any admin surface, accessibility, physical-device behavior, plural grammar, complete
+prove any admin surface, accessibility, physical-device behavior, complete plural grammar, complete
 semantic privacy of arbitrary placeholder prose, recovery behavior, stale marker association,
 focus, performance, observability, localization or API implementation. Those remain with
 the appropriate product tickets, adapters and independent QA/specialist review.

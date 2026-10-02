@@ -2,6 +2,21 @@ import { array, object, record, refuse, strings, text } from "./input";
 import { QUALITY_DIRECTORY, readJsonFile, readPinnedTaxonomy } from "./taxonomy";
 import type { CanonicalCopy, StateDefinition, Taxonomy } from "./taxonomy";
 
+const CURRENCY_CODE = `(?:${Intl.supportedValuesOf("currency").join("|")})`;
+const NUMERIC_AMOUNT = "[+-]?\\d+(?:[.,]\\d+)*";
+const CODE_MONEY = new RegExp(
+  `(?<![\\p{L}\\p{N}_])(?:${CURRENCY_CODE}\\s*${NUMERIC_AMOUNT}|${NUMERIC_AMOUNT}\\s*${CURRENCY_CODE})(?![\\p{L}\\p{N}_])`,
+  "u",
+);
+
+const PLURAL_AVAILABILITY_CLAUSES = new Set([
+  "answers", "items", "records", "reports", "tools",
+  "saved answers", "saved items", "saved records", "saved reports",
+  "your saved answers", "your saved items", "your saved records", "your saved reports",
+  "manual tools", "local records",
+]);
+const COORDINATED_AVAILABILITY_CLAUSES = new Set(["manual entry", "navigation", "everything outside ai"]);
+
 interface Surface {
   readonly id: string;
   readonly applicableStates: readonly string[];
@@ -36,11 +51,23 @@ function adminVersion(taxonomy: Taxonomy, value: Record<string, unknown>): void 
 function safeCopyText(taxonomy: Taxonomy, value: unknown): string {
   const result = text(value);
   if (/\p{Cc}|[{}<>]|\p{Sc}|https?:|@[a-z0-9-]+\./iu.test(result)) refuse("unsafe_copy");
+  if (CODE_MONEY.test(result)) refuse("money_copy");
   for (const term of taxonomy.forbiddenTerms) {
     const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     if (new RegExp(term === "!" ? escaped : `\\b${escaped}\\b`, "i").test(result)) refuse("forbidden_copy");
   }
   return result;
+}
+
+function qualifyAvailability(value: string): void {
+  const clauses = value.toLowerCase().split(" and ");
+  if (clauses.length === 1) {
+    if (!PLURAL_AVAILABILITY_CLAUSES.has(value.toLowerCase())) refuse("plural_availability");
+    return;
+  }
+  if (new Set(clauses).size !== clauses.length || clauses.some((clause) =>
+    !PLURAL_AVAILABILITY_CLAUSES.has(clause) && !COORDINATED_AVAILABILITY_CLAUSES.has(clause),
+  )) refuse("plural_availability");
 }
 
 export function taxonomyFirst(taxonomy: Taxonomy, enumeration: unknown): EnumerationResult {
@@ -68,7 +95,9 @@ function surface(taxonomy: Taxonomy, value: unknown, enumeration: readonly strin
   const copyValues = new Map<string, string>();
   for (const [key, item] of Object.entries(entry)) {
     if (!["surface_id", "client", "applicable_states", "capabilities", "freshness_window_seconds"].includes(key)) {
-      copyValues.set(key, safeCopyText(taxonomy, item));
+      const copyValue = safeCopyText(taxonomy, item);
+      if (key === "still_available") qualifyAvailability(copyValue);
+      copyValues.set(key, copyValue);
     }
   }
   const capabilities = entry["capabilities"] === undefined
@@ -123,6 +152,7 @@ function placeholderValues(
     const entry = object(supplied[id], ["source", "value"]);
     if (entry["source"] !== source) refuse("placeholder_source");
     const rendered = safeCopyText(taxonomy, entry["value"]);
+    if (id === "still_available") qualifyAvailability(rendered);
     if (source === "surface_registration") {
       if (id === "capability") {
         if (!registration.capabilities.includes(rendered)) refuse("registered_placeholder");
@@ -171,6 +201,9 @@ function observation(
     refuse("offline_condition");
   }
   const selected = selection(state, entry);
+  if (stateId === "error" && selected.variant !== "validation" && connectivity !== "online") {
+    refuse("error_connectivity");
+  }
   const values = placeholderValues(taxonomy, registration, entry["placeholders"], [
     selected.copy.headline, selected.copy.body, selected.label,
   ]);

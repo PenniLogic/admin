@@ -33,6 +33,9 @@ export function text(value: unknown): string {
 
 export function array(value: unknown): unknown[] {
   if (!Array.isArray(value)) refuse("array_required");
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index)) refuse("sparse_array");
+  }
   return value;
 }
 
