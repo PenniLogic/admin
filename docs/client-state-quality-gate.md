@@ -94,7 +94,13 @@ it recognizes a code, in any casing, from the pinned toolchain's finite
 either order, including leading decimals, separated signs, grouping/decimal separators and
 no-space forms. Recognition does not blindly treat every English use of a code as money:
 `all`, `top` or `try` followed by whitespace, an unsigned ordinary number and an explicit
-count/time unit qualifies as ordinary copy. The finite units are `check`, `request`, `item`,
+count/time unit qualifies as ordinary copy. An ordinary quantity is an ungrouped integer or
+dot fraction, or standard English comma grouping: a nonzero leading group of one to three
+digits, followed by groups of exactly three digits and optionally a dot fraction.
+Malformed grouping, signed quantities and a missing unit do not qualify.
+An exact unit must have no Unicode letter, mark, number or underscore continuation;
+combining marks are not separators. No normalization or locale-unit expansion is performed.
+The finite units are `check`, `request`, `item`,
 `record`, `report`, `tool`, `time`, `minute`, `hour` and `day`, each also plural. For example,
 `try 5 checks` stays valid, but `usd 7.50`, `USD - .50` and `7.50 uSd` do not. A qualified count
 never waives another monetary expression in the same text. Other ordinary counts and

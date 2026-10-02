@@ -13,7 +13,7 @@ const AMOUNT_CODE_MONEY = new RegExp(
   "iu",
 );
 const ORDINARY_COUNT_WORDS = new Set(["ALL", "TOP", "TRY"]);
-const COUNT_UNIT = /^\s+(?:checks?|requests?|items?|records?|reports?|tools?|times?|minutes?|hours?|days?)(?![\p{L}\p{N}_])/iu;
+const COUNT_UNIT = /^\s+(?:checks?|requests?|items?|records?|reports?|tools?|times?|minutes?|hours?|days?)(?![\p{L}\p{M}\p{N}_])/iu;
 
 const PLURAL_AVAILABILITY_CLAUSES = new Set([
   "answers", "items", "records", "reports", "tools",
@@ -62,7 +62,7 @@ function codeMoney(value: string): boolean {
     if (code === undefined || amount === undefined) refuse("money_pattern");
     const ordinaryCount = ORDINARY_COUNT_WORDS.has(code.toUpperCase())
       && /^\s/.test(match[0].slice(code.length))
-      && /^(?:\d+(?:\.\d+)?|\.\d+)$/.test(amount)
+      && /^(?:\d+(?:\.\d+)?|\.\d+|[1-9]\d{0,2}(?:,\d{3})+(?:\.\d+)?)$/.test(amount)
       && COUNT_UNIT.test(value.slice(match.index + match[0].length));
     if (!ordinaryCount) return true;
   }

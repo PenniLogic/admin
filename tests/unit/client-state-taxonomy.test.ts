@@ -1026,3 +1026,75 @@ describe("fd49 QA HOLD regressions: MV consistent canonical monetary channels", 
       .toThrow("client-state-gate:money_copy");
   });
 });
+
+describe("a3 HOLD regressions: F3 unsigned grouped ordinary counts", () => {
+  it.each([
+    { caseId: "F3-try-grouped", phrase: "try 1,000 checks" },
+    { caseId: "F3-all-grouped", phrase: "all 1,000 requests" },
+  ])("$caseId preserves the canonical non-monetary quantity", ({ phrase }) => {
+    expect(check(canonicalFixtureWithPlaceholder("error", "attempt", phrase)).client_state_coverage.status)
+      .toBe("synthetic_only");
+  });
+
+  it.each([
+    "top 1,000 items", "TRY 1,000 checks", "try 12,345 checks", "all 123,456 requests",
+    "try 1,234,567 checks", "all 1,000.25 hours", "try  1,000  checks",
+    "try\u00a01,000\u00a0checks",
+  ])("qualifies standard English grouping with exact units: %s", (phrase) => {
+    expect(check(canonicalFixtureWithPlaceholder("error", "attempt", phrase)).client_state_coverage.status)
+      .toBe("synthetic_only");
+  });
+
+  it.each([
+    "try 1,00 checks", "all 12,34 requests", "top 1234,567 items", "try 1,0000 checks",
+    "all 0,000 requests", "try 01,000 checks", "try 1,00,000 checks", "all 1,000,00 requests",
+    "try 1,,000 checks", "TRY +1,000 checks", "try - 1,000 checks",
+    "all 1,000", "1,000 TRY", "usd 1,000 checks",
+  ])("refuses malformed grouping, signed quantities and monetary forms: %s", (phrase) => {
+    expect(() => check(canonicalFixtureWithPlaceholder("error", "attempt", phrase)))
+      .toThrow("client-state-gate:money_copy");
+  });
+});
+
+describe("a3 HOLD regressions: F4 whole finite count-unit tokens", () => {
+  it.each([
+    { caseId: "F4-Core-after-unit", phrase: "try 5 checks\u0301" },
+    { caseId: "F4-Core-inside-plural", phrase: "try 5 check\u0301s" },
+    { caseId: "F4-QA-N-count-negative-18", phrase: "all 5 checks\u0301" },
+  ])("$caseId refuses the unqualified combining-mark token", ({ phrase }) => {
+    expect(() => check(canonicalFixtureWithPlaceholder("error", "attempt", phrase)))
+      .toThrow("client-state-gate:money_copy");
+  });
+
+  it.each([
+    "try 5 checks\u20dd", "all 5 checks\u093e", "top 5 item\u0301s", "try 1,000 checks\u0301",
+    "try 5 checks\u00e9", "all 5 checks\u03b1", "top 5 items_tail", "try 5 checks\u0660",
+  ])("refuses mark, letter, number and underscore continuations: %s", (phrase) => {
+    expect(() => check(canonicalFixtureWithPlaceholder("error", "attempt", phrase)))
+      .toThrow("client-state-gate:money_copy");
+  });
+
+  it.each([
+    "check", "request", "item", "record", "report", "tool", "time", "minute", "hour", "day",
+  ].flatMap((unit) => [unit, `${unit}s`]))("preserves the exact finite unit %s", (unit) => {
+    expect(check(canonicalFixtureWithPlaceholder("error", "attempt", `try 5 ${unit}`)).client_state_coverage.status)
+      .toBe("synthetic_only");
+  });
+
+  it.each(["Try  5 checks", "ALL\u00a05\u00a0requests", "top .5 hours"])(
+    "preserves unit casing, whitespace and ordinary time contrasts: %s",
+    (phrase) => {
+      expect(check(canonicalFixtureWithPlaceholder("error", "attempt", phrase)).client_state_coverage.status)
+        .toBe("synthetic_only");
+    },
+  );
+
+  it.each([
+    "try 1,000 checks then usd 7.50", "all 1,000 requests then 7.50 uSd",
+    "usd-.50 then try 1,000 checks", "try 1,000 checks then try 1,00 checks",
+    "try 1,000 checks then all 5 checks\u0301",
+  ])("never waives a remaining unqualified money expression after a grouped count: %s", (phrase) => {
+    expect(() => check(canonicalFixtureWithPlaceholder("error", "attempt", phrase)))
+      .toThrow("client-state-gate:money_copy");
+  });
+});
