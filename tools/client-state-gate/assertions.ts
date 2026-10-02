@@ -3,11 +3,17 @@ import { QUALITY_DIRECTORY, readJsonFile, readPinnedTaxonomy } from "./taxonomy"
 import type { CanonicalCopy, StateDefinition, Taxonomy } from "./taxonomy";
 
 const CURRENCY_CODE = `(?:${Intl.supportedValuesOf("currency").join("|")})`;
-const NUMERIC_AMOUNT = "[+-]?\\d+(?:[.,]\\d+)*";
+const NUMERIC_AMOUNT = "(?:[+-]\\s*)?(?:\\d+(?:[.,]\\d+)*|[.,]\\d+)";
 const CODE_MONEY = new RegExp(
-  `(?<![\\p{L}\\p{N}_])(?:${CURRENCY_CODE}\\s*${NUMERIC_AMOUNT}|${NUMERIC_AMOUNT}\\s*${CURRENCY_CODE})(?![\\p{L}\\p{N}_])`,
-  "u",
+  `(?<![\\p{L}\\p{N}_])(${CURRENCY_CODE})\\s*(${NUMERIC_AMOUNT})(?![\\p{L}\\p{N}_])`,
+  "giu",
 );
+const AMOUNT_CODE_MONEY = new RegExp(
+  `(?<![\\p{L}\\p{N}_])${NUMERIC_AMOUNT}\\s*${CURRENCY_CODE}(?![\\p{L}\\p{N}_])`,
+  "iu",
+);
+const ORDINARY_COUNT_WORDS = new Set(["ALL", "TOP", "TRY"]);
+const COUNT_UNIT = /^\s+(?:checks?|requests?|items?|records?|reports?|tools?|times?|minutes?|hours?|days?)(?![\p{L}\p{N}_])/iu;
 
 const PLURAL_AVAILABILITY_CLAUSES = new Set([
   "answers", "items", "records", "reports", "tools",
@@ -48,10 +54,25 @@ function adminVersion(taxonomy: Taxonomy, value: Record<string, unknown>): void 
   if (value["taxonomy_version"] !== taxonomy.version) refuse("taxonomy_version");
 }
 
+function codeMoney(value: string): boolean {
+  if (AMOUNT_CODE_MONEY.test(value)) return true;
+  for (const match of value.matchAll(CODE_MONEY)) {
+    const code = match[1];
+    const amount = match[2];
+    if (code === undefined || amount === undefined) refuse("money_pattern");
+    const ordinaryCount = ORDINARY_COUNT_WORDS.has(code.toUpperCase())
+      && /^\s/.test(match[0].slice(code.length))
+      && /^(?:\d+(?:\.\d+)?|\.\d+)$/.test(amount)
+      && COUNT_UNIT.test(value.slice(match.index + match[0].length));
+    if (!ordinaryCount) return true;
+  }
+  return false;
+}
+
 function safeCopyText(taxonomy: Taxonomy, value: unknown): string {
   const result = text(value);
   if (/\p{Cc}|[{}<>]|\p{Sc}|https?:|@[a-z0-9-]+\./iu.test(result)) refuse("unsafe_copy");
-  if (CODE_MONEY.test(result)) refuse("money_copy");
+  if (codeMoney(result)) refuse("money_copy");
   for (const term of taxonomy.forbiddenTerms) {
     const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     if (new RegExp(term === "!" ? escaped : `\\b${escaped}\\b`, "i").test(result)) refuse("forbidden_copy");

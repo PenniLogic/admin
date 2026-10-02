@@ -76,9 +76,12 @@ their matching placeholders. Optional freshness windows must be positive safe in
 
 `still_available` must qualify as a plural subject before it can be registered or substituted.
 This English-only consumer uses a closed vocabulary, not a suffix or an unchecked `and`:
-`answers`, `items`, `records`, `reports`, `tools`; their `saved` and `your saved` forms;
-`manual tools`; and `local records`. Two or more distinct clauses joined by ` and ` may use
-that vocabulary plus `manual entry`, `navigation` and `everything outside AI`.
+the fifteen standalone clauses are `answers`, `items`, `records`, `reports`, `tools`,
+`saved answers`, `saved items`, `saved records`, `saved reports`, `your saved answers`,
+`your saved items`, `your saved records`, `your saved reports`, `manual tools` and `local records`.
+Two or more distinct clauses joined by ` and ` may use that vocabulary plus the three
+coordinated-only clauses `manual entry`, `navigation` and `everything outside AI`.
+`Saved tools` and `Your saved tools` are not qualified; the allowlist is not expanded.
 Matching is case-insensitive; punctuation, unknown modifiers/heads, singular clauses used
 alone and unqualified wording fail closed. This accepts the provider's two examples and the
 native synthetic phrase without claiming complete grammar. New product wording needs a
@@ -86,12 +89,17 @@ reviewed qualification change, not a caller-supplied assertion that it is plural
 
 The same copy guard checks registration values, source-tagged placeholders and submitted
 fully substituted headlines, bodies and action labels. In addition to currency symbols,
-it rejects an uppercase code from the pinned toolchain's finite
+it recognizes a code, in any casing, from the pinned toolchain's finite
 `Intl.supportedValuesOf("currency")` vocabulary adjacent to an ASCII numeric amount in
-either order, including signed amounts, grouping/decimal separators and no-space forms.
-Ordinary counts and timestamps remain permitted. This performs no monetary calculation and
-does not claim to detect every locale spelling, historical currency code or natural-language
-monetary statement.
+either order, including leading decimals, separated signs, grouping/decimal separators and
+no-space forms. Recognition does not blindly treat every English use of a code as money:
+`all`, `top` or `try` followed by whitespace, an unsigned ordinary number and an explicit
+count/time unit qualifies as ordinary copy. The finite units are `check`, `request`, `item`,
+`record`, `report`, `tool`, `time`, `minute`, `hour` and `day`, each also plural. For example,
+`try 5 checks` stays valid, but `usd 7.50`, `USD - .50` and `7.50 uSd` do not. A qualified count
+never waives another monetary expression in the same text. Other ordinary counts and
+timestamps remain permitted. This performs no monetary calculation and does not claim to
+detect every locale spelling, historical currency code or natural-language monetary statement.
 
 `evidence.json` has exactly `gate_schema_version`, `client`, `taxonomy_version`,
 `evidence_kind`, and `observations`. Each observation has:

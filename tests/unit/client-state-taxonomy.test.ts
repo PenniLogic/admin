@@ -897,3 +897,132 @@ describe("independent HOLD regressions: qualified plural availability", () => {
     expect(() => check(value)).toThrow("client-state-gate:plural_availability");
   });
 });
+
+function canonicalFixtureWithPlaceholder(
+  state: string,
+  id: string,
+  replacement: string,
+  options: { variant?: string } = {},
+) {
+  const value = fixture([state]);
+  const surface = value.registry.surfaces[0];
+  const entry = syntheticObservation(state, options);
+  if (surface === undefined) throw new Error("Synthetic fixture is absent");
+  const previous = entry.placeholders[id];
+  if (previous === undefined) throw new Error("Synthetic fixture placeholder is absent");
+  if (id === "attempt" || id === "what_appears_here" || id === "primary_action" || id === "submit_label") {
+    surface[id] = replacement;
+  }
+  entry.placeholders[id] = { source: previous.source, value: replacement };
+  entry.copy = {
+    headline: entry.copy.headline.replaceAll(previous.value, replacement),
+    body: entry.copy.body.replaceAll(previous.value, replacement),
+  };
+  entry.recovery_actions = entry.recovery_actions.map((action) => ({
+    id: action.id,
+    label: action.label.replaceAll(previous.value, replacement),
+  }));
+  value.evidence.observations = [entry];
+  return value;
+}
+
+describe("fd49 HOLD regressions: M01-M12 consistent canonical monetary copy", () => {
+  it.each([
+    { caseId: "M01", state: "quota_exceeded", id: "limit", specimen: "usd 7.50", options: {} },
+    { caseId: "M02", state: "quota_exceeded", id: "limit", specimen: "7.50 usd", options: {} },
+    { caseId: "M03", state: "error", id: "attempt", specimen: "Usd 7.50", options: {} },
+    { caseId: "M04", state: "error", id: "attempt", specimen: "7.50 uSd", options: {} },
+    { caseId: "M05", state: "quota_exceeded", id: "limit", specimen: "USD .50", options: {} },
+    { caseId: "M06", state: "quota_exceeded", id: "limit", specimen: "USD-.50", options: {} },
+    { caseId: "M07", state: "quota_exceeded", id: "limit", specimen: "USD - 7.50", options: {} },
+    { caseId: "M08", state: "empty", id: "what_appears_here", specimen: "usd 7.50", options: {} },
+    { caseId: "M09", state: "empty", id: "primary_action", specimen: "usd 7.50", options: {} },
+    { caseId: "M10", state: "error", id: "submit_label", specimen: "usd 7.50", options: { variant: "validation" } },
+    { caseId: "M11", state: "quota_exceeded", id: "resets_at", specimen: "usd 7.50", options: { variant: "with_reset" } },
+    { caseId: "M12", state: "error", id: "field_guidance", specimen: "USD .50", options: { variant: "validation" } },
+  ])("$caseId refuses monetary substitution in $state/$id", ({ state, id, specimen, options }) => {
+    expect(() => check(canonicalFixtureWithPlaceholder(state, id, specimen, options)))
+      .toThrow("client-state-gate:money_copy");
+  });
+
+  it.each([
+    "usd7.50", "7.50usd", "uSd .50", ".50 uSd", "USD - 7.50", "- 7.50 USD",
+    "uSd + .50", "+ .50 uSd", "eur ,50", ",50 EUR", "GbP0.50", "0.50gBp",
+  ])("rejects the same finite forms in either ordering: %s", (specimen) => {
+    expect(() => check(canonicalFixtureWithPlaceholder("quota_exceeded", "limit", specimen)))
+      .toThrow("client-state-gate:money_copy");
+  });
+
+  it.each([
+    "try 5 checks", "Try 5 checks", "tRy 5 checks", "try 1 check",
+    "try 5 requests", "try 2 hours", "all 5 checks", "top 5 items", "TRY 5 checks", "Try .5 hours",
+  ])("preserves a qualified ordinary English count rather than case-folding it into money: %s", (value) => {
+    expect(check(canonicalFixtureWithPlaceholder("error", "attempt", value)).client_state_coverage.status)
+      .toBe("synthetic_only");
+  });
+
+  it.each([
+    "try 7.50", "7.50 try", "TRY -.50", "try- .50", "usd 7.50 checks",
+    "try 5 checks then usd 7.50", "try 5 checks\u00e9", "try 5 checks\u0660",
+  ])("does not waive monetary text under an ambiguous word or a separate qualified count: %s", (specimen) => {
+    expect(() => check(canonicalFixtureWithPlaceholder("error", "attempt", specimen)))
+      .toThrow("client-state-gate:money_copy");
+  });
+
+  it.each([
+    { state: "quota_exceeded", id: "limit", value: "5 checks per day" },
+    { state: "stale", id: "last_updated", value: "0.5 hours ago" },
+    { state: "stale", id: "last_updated", value: "09:30 UTC" },
+    { state: "quota_exceeded", id: "resets_at", value: "1 October", options: { variant: "with_reset" } },
+  ])("preserves ordinary count/time placeholders: $value", ({ state, id, value, options }) => {
+    expect(check(canonicalFixtureWithPlaceholder(state, id, value, options)).client_state_coverage.status)
+      .toBe("synthetic_only");
+  });
+});
+
+describe("fd49 documentation boundary: exact availability qualification", () => {
+  it.each([
+    "answers", "items", "records", "reports", "tools",
+    "saved answers", "saved items", "saved records", "saved reports",
+    "your saved answers", "your saved items", "your saved records", "your saved reports",
+    "manual tools", "local records",
+  ])("retains each of the actual fifteen standalone clauses: %s", (phrase) => {
+    expect(check(fixtureWithPlaceholder("quota_exceeded", "still_available", phrase)).client_state_coverage.status)
+      .toBe("synthetic_only");
+  });
+
+  it.each(["manual entry", "navigation", "everything outside AI"])(
+    "retains the coordinated-only boundary for %s used alone",
+    (phrase) => {
+      expect(() => check(fixtureWithPlaceholder("quota_exceeded", "still_available", phrase)))
+        .toThrow("client-state-gate:plural_availability");
+    },
+  );
+
+  it.each(["Saved tools", "Your saved tools"])("does not expand qualification to the undocumented form %s", (phrase) => {
+    expect(() => check(fixtureWithPlaceholder("quota_exceeded", "still_available", phrase)))
+      .toThrow("client-state-gate:plural_availability");
+  });
+});
+
+describe("fd49 QA HOLD regressions: MV consistent canonical monetary channels", () => {
+  it.each([
+    { index: 0, specimen: "usd 12.25" },
+    { index: 1, specimen: "12.25 usd" },
+    { index: 2, specimen: "Usd 12.25" },
+    { index: 3, specimen: "12.25 Usd" },
+    { index: 4, specimen: "USD .50" },
+    { index: 6, specimen: "USD -.50" },
+    { index: 8, specimen: "USD +.50" },
+    { index: 10, specimen: "USD - 12.25" },
+  ].flatMap(({ index, specimen }) => [
+    { channel: "service-quota", state: "quota_exceeded", id: "limit" },
+    { channel: "registered-attempt", state: "error", id: "attempt" },
+    { channel: "registered-empty", state: "empty", id: "what_appears_here" },
+  ].map((target) => ({
+    ...target, specimen, caseId: `MV-${target.channel}-${String(index)}`,
+  }))))("$caseId refuses canonical money copy", ({ state, id, specimen }) => {
+    expect(() => check(canonicalFixtureWithPlaceholder(state, id, specimen)))
+      .toThrow("client-state-gate:money_copy");
+  });
+});
